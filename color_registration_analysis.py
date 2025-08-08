@@ -128,13 +128,81 @@ def calculate_horizontal_correction(bottom_left, bottom_right, square_width_px, 
     
     return correction_um
 
+def detect_special_color(img: np.ndarray, exclude_ranges: dict) -> tuple:
+    """
+    이미지에서 특별한 색상을 동적으로 감지합니다.
+    CMY 색상 범위를 제외한 영역에서 가장 큰 색상 영역을 찾습니다.
+    
+    Args:
+        img (np.ndarray): 입력 이미지 (BGR)
+        exclude_ranges (dict): 제외할 색상 범위들 (C, M, Y)
+        
+    Returns:
+        tuple: (hsv_lower, hsv_upper) 또는 None
+    """
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    
+    # C, M, Y 색상 마스크 생성
+    exclude_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+    for color, (lower, upper) in exclude_ranges.items():
+        if color in ['C', 'M', 'Y']:
+            mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+            exclude_mask = cv2.bitwise_or(exclude_mask, mask)
+    
+    # 제외 영역을 마스킹한 이미지
+    masked_hsv = cv2.bitwise_and(hsv, hsv, mask=cv2.bitwise_not(exclude_mask))
+    
+    # 색상별로 영역을 찾기 위해 다양한 색상 범위를 테스트
+    color_ranges = [
+        # 빨간색 계열
+        ((0, 50, 50), (10, 255, 255)),
+        ((170, 50, 50), (180, 255, 255)),
+        # 주황색 계열
+        ((10, 50, 50), (25, 255, 255)),
+        # 초록색 계열
+        ((35, 50, 50), (85, 255, 255)),
+        # 파란색 계열
+        ((100, 50, 50), (130, 255, 255)),
+        # 보라색 계열
+        ((130, 50, 50), (170, 255, 255)),
+        # 분홍색 계열
+        ((140, 30, 50), (170, 255, 255)),
+        # 갈색 계열
+        ((10, 100, 20), (20, 255, 200)),
+        # 회색 계열
+        ((0, 0, 50), (180, 30, 200)),
+    ]
+    
+    best_area = 0
+    best_range = None
+    
+    for lower, upper in color_ranges:
+        mask = cv2.inRange(masked_hsv, np.array(lower), np.array(upper))
+        
+        # 모폴로지 연산으로 노이즈 제거
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        
+        # 컨투어 찾기
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # 가장 큰 컨투어의 면적 계산
+            max_area = max(cv2.contourArea(c) for c in contours)
+            
+            if max_area > best_area and max_area > 1000:  # 최소 면적 조건
+                best_area = max_area
+                best_range = (lower, upper)
+    
+    return best_range
+
 def main():
-    # HSV 색상 범위
+    # HSV 색상 범위 (CMY만 정의, S는 동적 감지)
     HSV = {
         'C': ((90,80,80),(130,255,255)),   # 청록색 (Cyan)
         'M': ((130,50,70),(170,255,255)),  # 자홍색 (Magenta) 
         'Y': ((20,80,80),(40,255,255)),    # 노란색 (Yellow)
-        'K': ((0,0,0),(180,255,50))        # 검은색 (blacK)
     }
     
     # 분석 모드 선택
@@ -177,9 +245,21 @@ def main():
         if mode in ['1', '3']:
             print(f"\n📍 컬러 레지스트레이션 분석:")
             
+            # Special color 감지
+            print("🔍 특별한 색상 감지 중...")
+            special_color_range = detect_special_color(cropped, HSV)
+            
+            if special_color_range is None:
+                print("❌ 특별한 색상을 감지할 수 없습니다.")
+                continue
+            
+            # HSV에 특별한 색상 추가
+            HSV['S'] = special_color_range
+            print(f"✅ 특별한 색상 감지됨: HSV 범위 {special_color_range}")
+            
             # T 좌표 (목표 기준점들) - 왼쪽 아래 (0,0) 기준으로 픽셀 좌표 계산
             target_coords = {
-                'K': (w_px/10, h_px - h_px*6/10),    # (length/10, height*4/10) - 아래서부터
+                'S': (w_px/10, h_px - h_px*6/10),    # Special color in K position
                 'C': (w_px*6/10, h_px - h_px*6/10),  # (length*6/10, height*4/10) - 아래서부터  
                 'M': (w_px/10, h_px - h_px/10),      # (length/10, height*9/10) - 아래서부터
                 'Y': (w_px*6/10, h_px - h_px/10)     # (length*6/10, height*9/10) - 아래서부터

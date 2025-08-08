@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CMYK Analyzer GUI 테스트 스크립트
+CMYS Analyzer GUI 테스트 스크립트
 GUI 없이 분석 기능이 제대로 작동하는지 테스트합니다.
 """
 
@@ -16,7 +16,7 @@ from datetime import datetime
 from color_registration_analysis import (
     extract_marker, detect_bottom_left, detect_square_corners,
     pixel_to_bottom_left_coord, calculate_tilt_angle, 
-    calculate_horizontal_correction, order_points
+    calculate_horizontal_correction, order_points, detect_special_color
 )
 
 def test_analysis(image_path, print_width_mm=210.0):
@@ -45,17 +45,28 @@ def test_analysis(image_path, print_width_mm=210.0):
         print(f"✅ 마커 추출 완료: {w_px} x {h_px} pixels")
         print(f"📐 픽셀당 mm: {mm_per_pixel_x:.6f} x {mm_per_pixel_y:.6f}")
         
-        # HSV 색상 범위
+        # HSV 색상 범위 (CMY만 정의, S는 동적 감지)
         HSV = {
             'C': ((90,80,80),(130,255,255)),   # 청록색 (Cyan)
-            'M': ((130,50,70),(170,255,255)),  # 자홍색 (Magenta) 
+            'M': ((130,50,70),(170,255,255)),  # 자홍색 (Magenta)
             'Y': ((20,80,80),(40,255,255)),    # 노란색 (Yellow)
-            'K': ((0,0,0),(180,255,50))        # 검은색 (blacK)
         }
+        
+        # Special color 감지
+        print("🔍 특별한 색상 감지 중...")
+        special_color_range = detect_special_color(cropped, HSV)
+        
+        if special_color_range is None:
+            print("❌ 특별한 색상을 감지할 수 없습니다.")
+            return False
+        
+        # HSV에 특별한 색상 추가
+        HSV['S'] = special_color_range
+        print(f"✅ 특별한 색상 감지됨: HSV 범위 {special_color_range}")
         
         # 목표 좌표 (왼쪽 아래 기준)
         target_coords = {
-            'K': (w_px/10, h_px - h_px*6/10),
+            'S': (w_px/10, h_px - h_px*6/10),  # Special color in K position
             'C': (w_px*6/10, h_px - h_px*6/10),
             'M': (w_px/10, h_px - h_px/10),
             'Y': (w_px*6/10, h_px - h_px/10)
@@ -142,7 +153,7 @@ def test_analysis(image_path, print_width_mm=210.0):
         print("\n5️⃣ 결과 요약:")
         print("=" * 50)
         
-        for color in ['C', 'M', 'Y', 'K']:
+        for color in ['C', 'M', 'Y', 'S']:
             print(f"\n🎨 {color} 색상:")
             
             # 레지스트레이션 결과
@@ -173,7 +184,7 @@ def test_analysis(image_path, print_width_mm=210.0):
 
 def main():
     """메인 함수"""
-    print("🎯 CMYK Registration & Tilt Analyzer 테스트")
+    print("🎯 CMYS Registration & Tilt Analyzer 테스트")
     print("=" * 60)
     
     # 테스트할 이미지 파일들

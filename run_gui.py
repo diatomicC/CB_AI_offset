@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CMYK Registration & Tilt Analyzer GUI 실행 스크립트
+CMYS Registration & Tilt Analyzer GUI 실행 스크립트
 """
 
 import sys
@@ -42,7 +42,7 @@ def check_dependencies():
 
 def main():
     """메인 함수"""
-    print("🎯 CMYK Registration & Tilt Analyzer GUI")
+    print("🎯 CMYS Registration & Tilt Analyzer GUI")
     print("=" * 50)
     
     # 현재 디렉토리 확인
