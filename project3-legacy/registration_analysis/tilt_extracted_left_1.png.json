@@ -1,0 +1,105 @@
+{
+  "C": {
+    "bottom_left_px": [
+      335.0,
+      273.0
+    ],
+    "bottom_right_px": [
+      522.0,
+      275.0
+    ],
+    "bottom_left_coord": [
+      335.0,
+      355.0
+    ],
+    "bottom_right_coord": [
+      522.0,
+      353.0
+    ],
+    "tilt_angle_deg": -0.612766,
+    "dx_px": 187.0,
+    "dy_px": -2.0,
+    "correction_5mm_um": 15.924,
+    "correction_actual_um": 668.79
+  },
+  "M": {
+    "bottom_left_px": [
+      109.0,
+      596.0
+    ],
+    "bottom_right_px": [
+      295.0,
+      598.0
+    ],
+    "bottom_left_coord": [
+      109.0,
+      32.0
+    ],
+    "bottom_right_coord": [
+      295.0,
+      30.0
+    ],
+    "tilt_angle_deg": -0.61606,
+    "dx_px": 186.0,
+    "dy_px": -2.0,
+    "correction_5mm_um": 15.924,
+    "correction_actual_um": 668.79
+  },
+  "Y": {
+    "bottom_left_px": [
+      388.0,
+      586.0
+    ],
+    "bottom_right_px": [
+      576.0,
+      588.0
+    ],
+    "bottom_left_coord": [
+      388.0,
+      42.0
+    ],
+    "bottom_right_coord": [
+      576.0,
+      40.0
+    ],
+    "tilt_angle_deg": -0.609507,
+    "dx_px": 188.0,
+    "dy_px": -2.0,
+    "correction_5mm_um": 15.924,
+    "correction_actual_um": 668.79
+  },
+  "S": {
+    "bottom_left_px": [
+      0.0,
+      627.0
+    ],
+    "bottom_right_px": [
+      627.0,
+      627.0
+    ],
+    "bottom_left_coord": [
+      0.0,
+      1.0
+    ],
+    "bottom_right_coord": [
+      627.0,
+      1.0
+    ],
+    "tilt_angle_deg": 0.0,
+    "dx_px": 627.0,
+    "dy_px": 0.0,
+    "correction_5mm_um": -0.0,
+    "correction_actual_um": -0.0
+  },
+  "metadata": {
+    "total_width_mm": 210.0,
+    "image_size_px": [
+      628,
+      628
+    ],
+    "mm_per_pixel": [
+      0.007961783439490446,
+      0.007961783439490446
+    ]
+  }
+}
