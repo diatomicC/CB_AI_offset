@@ -1,115 +1,177 @@
-# CMYK Registration & Tilt Analyzer GUI
+# CMYK Registration & Tilt Analyzer
 
-산업용 인쇄 품질 관리 및 보정을 위한 CMYK 컬러 박스 정렬 및 기울기 분석 GUI 애플리케이션입니다.
+A professional GUI application for industrial printing quality management and calibration through CMYK color box alignment and tilt analysis.
 
-## 🎯 주요 기능
+## 🎯 Overview
 
-- **📸 이미지 입력**: 파일 업로드 또는 카메라 캡처
-- **📏 프린트물 크기 설정**: 실제 프린트물 가로길이 입력 (기본값: 210mm)
-- **🎯 컬러 레지스트레이션 분석**: CMYK 각 색상의 X/Y 이동량 계산
-- **📐 기울기 분석**: 각 정사각형의 기울기 각도 및 보정값 계산
-- **🖼️ 시각화**: 목표점, 실제점, 기울기 각도 등을 시각적으로 표시
-- **💾 결과 저장**: JSON 파일 및 디버그 이미지 저장
+This project provides an advanced solution for analyzing color registration accuracy and detecting tilt issues in industrial printing processes. It's designed to help printing professionals maintain high-quality output by automatically detecting and measuring misalignments in CMYK color registration marks.
 
-## 🚀 설치 및 실행
+## ✨ Features
 
-### 1. 필요한 패키지 설치
+### Core Analysis Capabilities
+- **CMYK Color Detection**: Automatic detection of Cyan, Magenta, Yellow, and Special (K) color boxes
+- **Registration Analysis**: Precise measurement of color box alignment and positioning
+- **Tilt Detection**: Identification and measurement of angular misalignments
+- **Perspective Correction**: Automatic image perspective transformation for accurate measurements
 
+### User Interface
+- **Modern GUI**: Built with PySide6 for a professional, cross-platform experience
+- **Real-time Processing**: Live image analysis with immediate results
+- **Batch Processing**: Support for multiple image analysis
+- **Export Functionality**: Results export to CSV, Excel, and PDF formats
+- **Debug Mode**: Comprehensive debugging tools with visual overlays
+
+### Technical Features
+- **Computer Vision**: Advanced OpenCV-based image processing
+- **HSV Color Space**: Robust color detection using HSV color ranges
+- **Contour Analysis**: Sophisticated shape detection and analysis
+- **Coordinate Systems**: Precise pixel-to-coordinate conversion
+- **Multi-threading**: Non-blocking UI with background processing
+
+## 🚀 Installation
+
+### Prerequisites
+- Python 3.8 or higher
+- pip package manager
+
+### Quick Start
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd project3
+```
+
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. 애플리케이션 실행
-
+3. Run the application:
 ```bash
-python cmyk_analyzer_gui.py
+python run_gui.py
 ```
 
-## 📋 사용법
+## 📋 Requirements
 
-### 1. 이미지 입력
-- **파일 업로드**: "📁 이미지 업로드" 버튼을 클릭하여 이미지 파일 선택
-- **카메라 캡처**: "카메라 시작" 버튼을 클릭하여 실시간 카메라 프리뷰 활성화 후 "캡처" 버튼으로 이미지 촬영
+The following packages are required:
 
-### 2. 분석 설정
-- **프린트물 가로길이**: 실제 프린트물의 가로길이를 mm 단위로 입력 (기본값: 210mm)
+- `opencv-python>=4.8.0` - Computer vision and image processing
+- `numpy>=1.24.0` - Numerical computing
+- `PySide6>=6.5.0` - Modern Qt-based GUI framework
+- `Pillow>=10.0.0` - Image processing
+- `pandas>=2.0.0` - Data manipulation and analysis
+- `openpyxl>=3.1.0` - Excel file handling
+- `reportlab>=4.0.0` - PDF report generation
 
-### 3. 분석 실행
-- "🔍 분석 시작" 버튼을 클릭하여 분석 시작
-- 분석 진행 상황이 실시간으로 표시됩니다
+## 🎮 Usage
 
-### 4. 결과 확인
-분석 완료 후 다음 탭에서 결과를 확인할 수 있습니다:
+### Starting the Application
+1. Run `python run_gui.py` from the project directory
+2. The main GUI window will open with analysis options
 
-- **📊 분석 개요**: 전체 분석 결과 요약
-- **🎯 컬러 레지스트레이션**: 각 CMYK 색상의 정확한 위치 및 이동량
-- **📐 기울기 분석**: 각 정사각형의 기울기 각도 및 보정값
-- **🖼️ 시각화**: 분석 결과를 시각적으로 표시
+### Basic Workflow
+1. **Load Image**: Select an image containing CMYK registration marks
+2. **Configure Analysis**: Set color detection parameters and analysis options
+3. **Run Analysis**: Execute the registration and tilt analysis
+4. **Review Results**: Examine detected color boxes and measurements
+5. **Export Data**: Save results in your preferred format
 
-### 5. 결과 저장
-- **💾 JSON 저장**: 분석 결과를 JSON 파일로 저장
-- **🖼️ 이미지 저장**: 디버그 이미지를 PNG 파일로 저장
+### Advanced Features
+- **Custom Color Ranges**: Adjust HSV values for specific color detection
+- **Batch Processing**: Analyze multiple images simultaneously
+- **Debug Mode**: Enable detailed processing information and visual overlays
+- **Measurement Calibration**: Fine-tune measurement accuracy
 
-## 📊 분석 결과 해석
+## 🏗️ Architecture
 
-### 컬러 레지스트레이션
-- **P 좌표**: 실제 검출된 컬러 박스의 왼쪽 아래 꼭지점
-- **T 좌표**: 목표 위치 (이상적인 위치)
-- **이동량**: P에서 T로 이동하기 위해 필요한 X/Y 거리 (mm)
+### Core Modules
 
-### 기울기 분석
-- **기울기 각도**: 정사각형 밑변의 기울기 (도 단위)
-- **보정값**: 수평을 맞추기 위해 필요한 보정량 (μm 단위)
-- **보정 방향**: 오른쪽 아래 꼭지점을 위/아래로 이동
+#### `cmyk_analyzer_gui.py`
+Main GUI application with PySide6 interface, providing:
+- Image loading and display
+- Analysis parameter configuration
+- Real-time processing controls
+- Results visualization
+- Export functionality
 
-## 🎨 색상 범위
+#### `color_registration_analysis.py`
+Core analysis engine containing:
+- `extract_marker()`: Image perspective correction
+- `detect_bottom_left()`: Color box corner detection
+- `detect_square_corners()`: Complete box corner analysis
+- `pixel_to_bottom_left_coord()`: Coordinate conversion utilities
 
-애플리케이션에서 사용하는 HSV 색상 범위:
+#### `run_gui.py`
+Application launcher with:
+- Dependency checking
+- Environment validation
+- Error handling
+- Application startup
 
-- **C (Cyan)**: 청록색 - H: 90-130, S: 80-255, V: 80-255
-- **M (Magenta)**: 자홍색 - H: 130-170, S: 50-255, V: 70-255
-- **Y (Yellow)**: 노란색 - H: 20-40, S: 80-255, V: 80-255
-- **K (Black)**: 검은색 - H: 0-180, S: 0-255, V: 0-50
+### Data Flow
+1. **Image Input** → Raw image loading
+2. **Preprocessing** → Perspective correction and enhancement
+3. **Color Detection** → HSV-based color segmentation
+4. **Shape Analysis** → Contour detection and validation
+5. **Measurement** → Distance and angle calculations
+6. **Results** → Data export and visualization
 
-## 📁 파일 구조
+## 🔧 Configuration
 
-```
-project3/
-├── cmyk_analyzer_gui.py          # 메인 GUI 애플리케이션
-├── color_registration_analysis.py # 기존 분석 모듈
-├── requirements.txt              # 필요한 패키지 목록
-├── README.md                     # 사용 설명서
-├── images/                       # 테스트 이미지들
-├── output/                       # 추출된 마커 이미지들
-└── registration_analysis/        # 분석 결과 저장 폴더
-```
+### Color Detection Parameters
+The system uses predefined HSV ranges for CMYK colors:
+- **Cyan (C)**: Specific HSV range for cyan detection
+- **Magenta (M)**: Specific HSV range for magenta detection
+- **Yellow (Y)**: Specific HSV range for yellow detection
+- **Special (K)**: Automatic detection based on box size analysis
 
-## 🔧 기술 스택
+### Analysis Settings
+- **Minimum Area Ratio**: Filter for valid color boxes
+- **Tolerance Levels**: Acceptable deviation thresholds
+- **Debug Mode**: Enable detailed processing information
 
-- **UI Framework**: PySide6
-- **Image Processing**: OpenCV (cv2)
-- **Data Handling**: NumPy, JSON
-- **Export**: pandas, openpyxl (선택사항)
+## 📊 Output Formats
 
-## 🎯 대상 사용자
+### Data Export
+- **CSV**: Tabular data for spreadsheet analysis
+- **Excel**: Formatted reports with multiple sheets
+- **PDF**: Professional reports with visual elements
 
-- 인쇄기 조작자
-- 제조업 QA 엔지니어
-- 인쇄 정밀도 연구개발 엔지니어
-- 컴퓨터 비전 검사 파이프라인 테스트 엔지니어
+### Analysis Results
+- Color box coordinates and dimensions
+- Registration accuracy measurements
+- Tilt angle calculations
+- Quality assessment scores
+- Processing metadata
 
-## 🔮 향후 확장 계획
+## 🐛 Troubleshooting
 
-- 실시간 카메라 스트림 분석
-- 하드웨어 통합 (카메라 트리거, 모터 피드백)
-- 관리자 모드 (파라미터 튜닝)
-- 배치 이미지 분석
-- 사용자 로그인/세션 히스토리 추적
+### Common Issues
+1. **Missing Dependencies**: Ensure all requirements are installed
+2. **Image Quality**: Use high-resolution images with clear color separation
+3. **Color Detection**: Adjust HSV ranges for specific lighting conditions
+4. **Performance**: Large images may require longer processing times
 
-## 📞 지원
+### Debug Mode
+Enable debug mode to:
+- View intermediate processing steps
+- Identify detection failures
+- Optimize parameters
+- Validate analysis accuracy
 
-문제가 발생하거나 개선 사항이 있으시면 이슈를 등록해 주세요.
+## 🤝 Contributing
 
-## 📄 라이선스
+We welcome contributions to improve the project:
 
-이 프로젝트는 MIT 라이선스 하에 배포됩니다. 
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+---
+
+**Note**: This application is designed for professional printing environments and requires proper calibration for optimal results.
