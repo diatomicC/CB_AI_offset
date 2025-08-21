@@ -1,0 +1,187 @@
+name: Build Executables
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - windows
+        - macos
+        - linux
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Build Windows executable
+      run: |
+        pyinstaller --onefile --windowed --icon=app_icon.ico --name=CMYK_Analyzer run_gui.py
+        
+    - name: Create Windows deployment package
+      run: |
+        mkdir deploy_windows
+        copy dist\CMYK_Analyzer.exe deploy_windows\
+        copy app_icon.ico deploy_windows\
+        cd deploy_windows
+        7z a CMYK_Analyzer_Windows.zip *
+        cd ..
+        
+    - name: Upload Windows artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-executable-${{ matrix.python-version }}
+        path: |
+          dist/CMYK_Analyzer.exe
+          deploy_windows/
+        retention-days: 30
+
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Build macOS executable
+      run: |
+        pyinstaller --onefile --windowed --icon=MyIcon.icns --name=CMYK_Analyzer run_gui.py
+        
+    - name: Create macOS app bundle
+      run: |
+        pyinstaller --onedir --windowed --icon=MyIcon.icns --name=CMYK_Analyzer run_gui.py
+        
+    - name: Create macOS deployment package
+      run: |
+        mkdir deploy_macos
+        cp dist/CMYK_Analyzer deploy_macos/
+        cp -r dist/CMYK_Analyzer.app deploy_macos/
+        cp MyIcon.icns deploy_macos/
+        cd deploy_macos
+        zip -r CMYK_Analyzer_macOS.zip *
+        cd ..
+        
+    - name: Upload macOS artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: macos-executable-${{ matrix.python-version }}
+        path: |
+          dist/CMYK_Analyzer
+          dist/CMYK_Analyzer.app
+          deploy_macos/
+        retention-days: 30
+
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Build Linux executable
+      run: |
+        pyinstaller --onefile --name=CMYK_Analyzer run_gui.py
+        
+    - name: Create Linux deployment package
+      run: |
+        mkdir deploy_linux
+        cp dist/CMYK_Analyzer deploy_linux/
+        cd deploy_linux
+        tar -czf CMYK_Analyzer_Linux.tar.gz *
+        cd ..
+        
+    - name: Upload Linux artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-executable-${{ matrix.python-version }}
+        path: |
+          dist/CMYK_Analyzer
+          deploy_linux/
+        retention-days: 30
+
+  create-release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          artifacts/windows-executable-3.11/deploy_windows/CMYK_Analyzer_Windows.zip
+          artifacts/macos-executable-3.11/deploy_macos/CMYK_Analyzer_macOS.zip
+          artifacts/linux-executable-3.11/deploy_linux/CMYK_Analyzer_Linux.tar.gz
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

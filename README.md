@@ -1,5 +1,8 @@
 # CMYK Registration & Tilt Analyzer
 
+[![Build Windows](https://github.com/Diatomicc2/{repo}/workflows/Build%20Windows%20Executable/badge.svg)](https://github.com/Diatomicc2/{repo}/actions)
+[![Build Status](https://github.com/Diatomicc2/{repo}/workflows/Build%20Executables/badge.svg)](https://github.com/Diatomicc2/{repo}/actions)
+
 A professional GUI application for industrial printing quality management and calibration through CMYK color box alignment and tilt analysis.
 
 ## 🎯 Overview
@@ -35,6 +38,8 @@ This project provides an advanced solution for analyzing color registration accu
 - pip package manager
 
 ### Quick Start
+
+#### Option 1: Traditional Installation
 1. Clone the repository:
 ```bash
 git clone <repository-url>
@@ -50,6 +55,99 @@ pip install -r requirements.txt
 ```bash
 python run_gui.py
 ```
+
+#### Option 2: Docker (Recommended for Easy Setup)
+**Prerequisites:**
+- Docker Desktop installed
+- Docker Compose available
+
+**Quick Start with Docker:**
+```bash
+# Clone the repository
+git clone <repository-url>
+cd project3
+
+# Run with Docker (Linux/macOS)
+./run_docker.sh
+
+# Run with Docker (Windows)
+run_docker.bat
+```
+
+**Manual Docker Commands:**
+```bash
+# Build and run
+docker-compose up --build
+
+# Or build first, then run
+docker-compose build
+docker-compose up
+```
+
+**Stop the application:**
+```bash
+docker-compose down
+```
+
+**Benefits of Docker:**
+- ✅ No need to install Python or dependencies
+- ✅ Works the same on all operating systems
+- ✅ Easy to share and deploy
+- ✅ Isolated environment
+- ✅ No conflicts with system packages
+
+#### Option 3: Standalone Executable
+**Prerequisites:**
+- Python 3.8+ installed (for building only)
+- Windows, macOS, or Linux
+
+**macOS Executable Build:**
+```bash
+# Method 1: Use automatic build script
+./build.sh
+
+# Method 2: Use Python script
+python build_macos.py
+
+# Method 3: Use PyInstaller directly
+pyinstaller CMYK_Analyzer.spec
+```
+
+**Windows Executable Build:**
+```bash
+# Build with PyInstaller
+pyinstaller --onefile --windowed --icon=app_icon.ico run_gui.py
+```
+
+**Linux Executable Build:**
+```bash
+# Build with PyInstaller
+pyinstaller --onefile --windowed run_gui.py
+```
+
+**Build Executable:**
+```bash
+# Windows
+build_exe.bat
+
+# Linux/macOS
+./build_exe.sh
+
+# Or manually with Python
+python build_exe.py
+```
+
+**Use Executable:**
+- After building, copy the `CMYK_Analyzer_Release/` folder to any computer
+- Double-click `CMYK_Analyzer.exe` (Windows) or `CMYK_Analyzer` (Linux/macOS)
+- No Python installation required on target computer
+
+**Benefits of Executable:**
+- ✅ No Python installation required on target computer
+- ✅ Single file distribution
+- ✅ Works offline
+- ✅ Easy to share via USB or network
+- ✅ Professional application feel
 
 ## 📋 Requirements
 
