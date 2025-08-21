@@ -1,50 +1,26 @@
 #!/bin/bash
 
-# CMYK Analyzer macOS Build Script
+# CMYK Analyzer Build Script - Main Entry Point
 
-echo "🎯 CMYK Analyzer macOS Executable Builder"
+echo "🎯 CMYK Analyzer Build System"
 echo "=================================================="
 
-# Check Python virtual environment
-if [ -d "venv" ]; then
-    echo "✅ Virtual environment found. Activating..."
-    source venv/bin/activate
-else
-    echo "⚠️ Virtual environment not found. Using system Python."
-fi
-
-# Check PyInstaller installation
-if ! python -c "import PyInstaller" 2>/dev/null; then
-    echo "📦 Installing PyInstaller..."
-    pip install pyinstaller
-    if [ $? -ne 0 ]; then
-        echo "❌ Failed to install PyInstaller."
-        exit 1
-    fi
-    echo "✅ PyInstaller installation completed!"
-else
-    echo "✅ PyInstaller is already installed."
-fi
-
-# Clean previous build
-echo "🧹 Cleaning previous build files..."
-rm -rf build dist __pycache__
-
-# Build with PyInstaller
-echo "🔨 Building with PyInstaller..."
-pyinstaller CMYK_Analyzer.spec
-
-if [ $? -eq 0 ]; then
-    echo ""
-    echo "🎉 Build completed successfully!"
-    echo ""
-    echo "📁 Generated files:"
-    echo "   - Single executable: dist/CMYK_Analyzer"
-    echo "   - App bundle: dist/CMYK_Analyzer.app"
-    echo ""
-    echo "💡 You can drag the app bundle to Applications folder to install."
-    echo "💡 Or double-click in Finder to run."
-else
-    echo "❌ Build failed."
-    exit 1
-fi
+# Check current platform
+PLATFORM=$(uname -s)
+case $PLATFORM in
+    "Darwin")
+        echo "🍎 macOS detected - Running macOS build..."
+        ./scripts/build.sh
+        ;;
+    "Linux")
+        echo "🐧 Linux detected - Running Docker build for Windows..."
+        ./scripts/build_windows_docker.sh
+        ;;
+    *)
+        echo "❓ Unknown platform: $PLATFORM"
+        echo "   Available build scripts:"
+        echo "   - ./scripts/build.sh (macOS)"
+        echo "   - ./scripts/build_windows_docker.sh (Windows via Docker)"
+        echo "   - ./scripts/build_windows_simple.sh (Simple Windows build)"
+        ;;
+esac

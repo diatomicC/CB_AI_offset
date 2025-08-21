@@ -71,5 +71,9 @@ Thumbs.db
 *.zip
 *.tar.gz
 
-# Test files
-test file/
+# Examples and legacy code
+examples/
+
+# Temporary files
+*.tmp
+*.temp

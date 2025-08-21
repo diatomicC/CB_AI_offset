@@ -38,8 +38,8 @@ def build_macos_app():
     
     # Current directory
     current_dir = Path(__file__).parent
-    icon_path = current_dir / "MyIcon.icns"
-    main_script = current_dir / "run_gui.py"
+    icon_path = current_dir.parent / "assets/icons/MyIcon.icns"
+    main_script = current_dir.parent / "run_gui.py"
     
     # Check icon file
     if not icon_path.exists():
@@ -157,7 +157,7 @@ def create_app_bundle():
         f.write(plist_content)
     
     # Copy icon (if available)
-    icon_path = Path("MyIcon.icns")
+    icon_path = Path("assets/icons/MyIcon.icns")
     if icon_path.exists():
         shutil.copy2(icon_path, resources_dir / "AppIcon.icns")
         print("✅ Icon included in app bundle.")

@@ -43,7 +43,7 @@ jobs:
         
     - name: Build Windows executable
       run: |
-        pyinstaller --onefile --windowed --icon=app_icon.ico --name=CMYK_Analyzer run_gui.py
+        pyinstaller --onefile --windowed --icon=assets/icons/app_icon.ico --name=CMYK_Analyzer run_gui.py
         
     - name: Create Windows deployment package
       run: |
@@ -86,18 +86,18 @@ jobs:
         
     - name: Build macOS executable
       run: |
-        pyinstaller --onefile --windowed --icon=MyIcon.icns --name=CMYK_Analyzer run_gui.py
+        pyinstaller --onefile --windowed --icon=assets/icons/MyIcon.icns --name=CMYK_Analyzer run_gui.py
         
     - name: Create macOS app bundle
       run: |
-        pyinstaller --onedir --windowed --icon=MyIcon.icns --name=CMYK_Analyzer run_gui.py
+        pyinstaller --onedir --windowed --icon=assets/icons/MyIcon.icns --name=CMYK_Analyzer run_gui.py
         
     - name: Create macOS deployment package
       run: |
         mkdir deploy_macos
         cp dist/CMYK_Analyzer deploy_macos/
         cp -r dist/CMYK_Analyzer.app deploy_macos/
-        cp MyIcon.icns deploy_macos/
+        cp assets/icons/MyIcon.icns deploy_macos/
         cd deploy_macos
         zip -r CMYK_Analyzer_macOS.zip *
         cd ..

@@ -29,13 +29,13 @@ jobs:
         
     - name: Build Windows executable
       run: |
-        pyinstaller --onefile --windowed --icon=app_icon.ico --name=CMYK_Analyzer run_gui.py
+        pyinstaller --onefile --windowed --icon=assets/icons/app_icon.ico --name=CMYK_Analyzer run_gui.py
         
     - name: Create Windows deployment package
       run: |
         mkdir deploy_windows
         copy dist\CMYK_Analyzer.exe deploy_windows\
-        if exist app_icon.ico copy app_icon.ico deploy_windows\
+        if exist assets\icons\app_icon.ico copy assets\icons\app_icon.ico deploy_windows\
         cd deploy_windows
         powershell Compress-Archive -Path * -DestinationPath CMYK_Analyzer_Windows.zip
         cd ..

@@ -101,28 +101,26 @@ docker-compose down
 - Python 3.8+ installed (for building only)
 - Windows, macOS, or Linux
 
-**macOS Executable Build:**
+**Quick Build (Auto-detect Platform):**
 ```bash
-# Method 1: Use automatic build script
 ./build.sh
-
-# Method 2: Use Python script
-python build_macos.py
-
-# Method 3: Use PyInstaller directly
-pyinstaller CMYK_Analyzer.spec
 ```
 
-**Windows Executable Build:**
+**Platform-Specific Builds:**
 ```bash
-# Build with PyInstaller
-pyinstaller --onefile --windowed --icon=app_icon.ico run_gui.py
-```
+# macOS
+./scripts/build.sh
+python scripts/build_macos.py
 
-**Linux Executable Build:**
-```bash
-# Build with PyInstaller
-pyinstaller --onefile --windowed run_gui.py
+# Windows (via Docker)
+./scripts/build_windows_docker.sh
+./scripts/build_windows_simple.sh
+
+# Windows (native)
+python scripts/build_windows.py
+
+# PyInstaller direct
+pyinstaller scripts/CMYK_Analyzer.spec
 ```
 
 **Build Executable:**
