@@ -515,10 +515,11 @@ class AnalysisWorker(QThread):
             mm_per_pixel_y = 5.0 / h_px
             
             # Basic CMYK color ranges (excluding K)
+            # Based on actual image analysis, these are the correct HSV ranges
             base_colors = {
-                'C': ((90,80,80),(130,255,255)),   # Cyan
-                'M': ((130,50,70),(170,255,255)),  # Magenta 
-                'Y': ((15,60,60),(45,255,255)),    # Yellow - expanded range for better detection
+                'C': ((100,80,80),(130,255,255)),   # Blue (Cyan in printing)
+                'M': ((130,50,70),(170,255,255)),   # Magenta 
+                'Y': ((15,60,60),(35,255,255)),     # Orange (Yellow in printing)
             }
             
             # Detect special color
@@ -537,11 +538,14 @@ class AnalysisWorker(QThread):
             self.special_color_name = special_color_name
             
             # Target coordinates (bottom-left origin)
+            # Based on actual image layout: 2x2 grid
+            # Top-left: Orange (Y), Top-right: Blue (C)
+            # Bottom-left: Magenta (M), Bottom-right: Yellow (S)
             target_coords = {
-                'S': (w_px/10, h_px - h_px*6/10),  # Special color at K position
-                'C': (w_px*6/10, h_px - h_px*6/10),
-                'M': (w_px/10, h_px - h_px/10),
-                'Y': (w_px*6/10, h_px - h_px/10)
+                'Y': (w_px/10, h_px - h_px*6/10),      # Orange - Top-left
+                'C': (w_px*6/10, h_px - h_px*6/10),    # Blue - Top-right  
+                'M': (w_px/10, h_px - h_px/10),         # Magenta - Bottom-left
+                'S': (w_px*6/10, h_px - h_px/10)        # Yellow - Bottom-right (Special)
             }
             
             self.progress.emit("Analyzing color registration...")
@@ -845,11 +849,12 @@ class AnalysisWorker(QThread):
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
             
             # Draw P points and connections
+            # Based on actual image colors for better visualization
             colors_rgb = {
-                'C': (255, 255, 0),    # Cyan -> Yellow for visibility
+                'C': (255, 0, 0),      # Blue (Cyan) -> Red for visibility
                 'M': (255, 0, 255),    # Magenta
-                'Y': (0, 255, 255),    # Yellow -> Cyan for visibility
-                'S': (0, 255, 0)       # Special -> Green
+                'Y': (0, 165, 255),    # Orange (Yellow) -> Orange for visibility  
+                'S': (0, 255, 255)     # Yellow (Special) -> Yellow for visibility
             }
             
             measurement_y = max_h - 60  # Y position for measurements text
@@ -971,7 +976,8 @@ class AnalysisWorker(QThread):
                 large_cnts = [c for c, area in zip(cnts, areas) if area >= min_area_threshold]
                 
                 # Draw only the large contours
-                color_map = {'C': (255, 255, 0), 'M': (255, 0, 255), 'Y': (0, 255, 255), 'S': (128, 128, 128)}
+                # Based on actual image colors for better visualization
+                color_map = {'C': (255, 0, 0), 'M': (255, 0, 255), 'Y': (0, 165, 255), 'S': (0, 255, 255)}
                 draw_color = color_map.get(color, (255, 255, 255))
                 
                 cv2.drawContours(result_img, large_cnts, -1, draw_color, 3)
