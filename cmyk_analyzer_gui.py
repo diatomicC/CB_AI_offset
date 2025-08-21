@@ -522,13 +522,38 @@ class AnalysisWorker(QThread):
                 'Y': ((10,80,80),(25,255,255)),     # Orange (Yellow in printing) - 더 정확한 범위
             }
             
-            # Detect special color
-            self.progress.emit("Detecting special color...")
-            special_hsv_range, special_color_name = detect_special_color(cropped, base_colors)
+            # Detect special color (Yellow)
+            self.progress.emit("Detecting special color (Yellow)...")
             
-            if special_hsv_range is None:
-                self.error.emit("Special color could not be detected. Please ensure the image contains a clear special color region.")
-                return
+            # Direct HSV range for Yellow (Special color)
+            yellow_hsv_range = ((20, 100, 100), (30, 255, 255))  # Yellow HSV range
+            
+            # Test if yellow color exists in the image
+            hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
+            yellow_mask = cv2.inRange(hsv, np.array(yellow_hsv_range[0]), np.array(yellow_hsv_range[1]))
+            
+            # Check if yellow color is detected
+            if cv2.countNonZero(yellow_mask) > 1000:  # At least 1000 yellow pixels
+                special_hsv_range = yellow_hsv_range
+                special_color_name = "Yellow"
+                print(f"✅ Special color (Yellow) detected successfully")
+            else:
+                # Fallback: try broader yellow range
+                yellow_hsv_range_fallback = ((15, 80, 80), (35, 255, 255))
+                yellow_mask_fallback = cv2.inRange(hsv, np.array(yellow_hsv_range_fallback[0]), np.array(yellow_hsv_range_fallback[1]))
+                
+                if cv2.countNonZero(yellow_mask_fallback) > 1000:
+                    special_hsv_range = yellow_hsv_range_fallback
+                    special_color_name = "Yellow_Fallback"
+                    print(f"✅ Special color (Yellow) detected with fallback range")
+                else:
+                    # Last resort: use the original complex detection
+                    print(f"⚠️ Direct yellow detection failed, trying complex detection...")
+                    special_hsv_range, special_color_name = detect_special_color(cropped, base_colors)
+                    
+                    if special_hsv_range is None:
+                        self.error.emit("Special color could not be detected. Please ensure the image contains a clear yellow region.")
+                        return
             
             # Complete color ranges (including special color)
             HSV = base_colors.copy()
