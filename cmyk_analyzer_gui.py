@@ -602,13 +602,51 @@ class AnalysisWorker(QThread):
             
             self.progress.emit("Analysis completed!")
             
-            # Calculate cocking values if right image is available
+            # Analyze right image for cocking calculation if available
             cocking_results = {}
             cocking_debug_img = None
+            right_results_reg = {}
             
             if self.right_image_path:
                 self.progress.emit("Analyzing right image for cocking calculation...")
-                cocking_results, cocking_debug_img = self.calculate_cocking(HSV, cropped, results_reg, mm_per_pixel_x, mm_per_pixel_y)
+                
+                # Process right image the same way as left image
+                right_orig = cv2.imread(self.right_image_path)
+                if right_orig is not None:
+                    # Extract square marker from right image
+                    right_preprocessed = extract_robust_square_marker(right_orig)
+                    if right_preprocessed is not None:
+                        # Extract CMYK marker region from right image
+                        right_cropped = extract_marker(right_preprocessed)
+                        if right_cropped is not None:
+                            # Analyze right image using same HSV ranges and target coordinates
+                            for color, hsv_range in HSV.items():
+                                bl = detect_bottom_left(right_cropped, hsv_range, min_area_ratio=0.7)
+                                if bl is not None:
+                                    px_px, py_px = bl
+                                    px_bl, py_bl = pixel_to_bottom_left_coord(px_px, py_px, right_cropped.shape[0])
+                                    
+                                    tx_px, ty_px = target_coords[color]
+                                    tx_bl, ty_bl = pixel_to_bottom_left_coord(tx_px, ty_px, right_cropped.shape[0])
+                                    
+                                    right_results_reg[color] = {
+                                        'P_coord_mm': (px_bl * mm_per_pixel_x, py_bl * mm_per_pixel_y),
+                                        'T_coord_mm': (tx_bl * mm_per_pixel_x, ty_bl * mm_per_pixel_y),
+                                        'bottom_left_px': [px_px, py_px]
+                                    }
+                                else:
+                                    right_results_reg[color] = None
+                            
+                            # Now calculate cocking using both left and right results
+                            cocking_results, cocking_debug_img = self.calculate_cocking_from_results(
+                                left_results_reg, right_results_reg, cropped, right_cropped, mm_per_pixel_y
+                            )
+                        else:
+                            print("❌ Could not extract CMYK marker from right image")
+                    else:
+                        print("❌ Could not find square marker in right image")
+                else:
+                    print("❌ Could not read right image file")
             
             # Calculate adjustment values (now includes cocking)
             adjustments = calculate_adjustment_values(results_reg, cocking_results)
@@ -644,21 +682,21 @@ class AnalysisWorker(QThread):
         except Exception as e:
             self.error.emit(f"Error during analysis: {str(e)}")
             
-    def calculate_cocking(self, HSV, left_cropped, left_results_reg, mm_per_pixel_x, mm_per_pixel_y):
+    def calculate_cocking_from_results(self, left_results_reg, right_results_reg, left_cropped, right_cropped, mm_per_pixel_y):
         """
         Calculate cocking values by comparing Y coordinates between left and right images.
         
         Cocking Algorithm:
-        1. Process left image and extract P points (already done in left_results_reg)
-        2. Process right image the same way to get P points
+        1. Use already processed left image P points from left_results_reg
+        2. Use already processed right image P points from right_results_reg
         3. Compare Y positions of corresponding P points between left and right
         4. Calculate difference: right_y - left_y (positive = right is lower)
         
         Args:
-            HSV: Color HSV ranges dictionary
-            left_cropped: Processed left image
-            left_results_reg: Results from left image analysis
-            mm_per_pixel_x: X-axis conversion factor
+            left_results_reg: Results from left image analysis (already processed)
+            right_results_reg: Results from right image analysis (already processed)
+            left_cropped: Processed left image for visualization
+            right_cropped: Processed right image for visualization
             mm_per_pixel_y: Y-axis conversion factor
             
         Returns:
@@ -666,67 +704,27 @@ class AnalysisWorker(QThread):
         """
         try:
             print("=" * 50)
-            print("COCKING ALGORITHM - STEP BY STEP ANALYSIS")
+            print("COCKING ALGORITHM - USING PRE-PROCESSED RESULTS")
             print("=" * 50)
             
-            # Step 1: Validate right image path
-            print("STEP 1: Validating right image...")
-            if not self.right_image_path:
-                print("❌ ERROR: No right image provided for cocking analysis")
+            # Step 1: Validate input data
+            print("STEP 1: Validating input data...")
+            if not left_results_reg or not right_results_reg:
+                print("❌ ERROR: Missing left or right image results")
                 return {}, None
-            print(f"✅ Right image path: {self.right_image_path}")
-                
-            # Step 2: Load and process right image
-            print("STEP 2: Loading right image...")
-            right_orig = cv2.imread(self.right_image_path)
-            if right_orig is None:
-                print("❌ ERROR: Cannot read right image file")
-                return {}, None
-            print(f"✅ Right image loaded: {right_orig.shape}")
-                
-            # Step 3: Extract square marker from right image
-            print("STEP 3: Extracting square marker from right image...")
-            right_preprocessed = extract_robust_square_marker(right_orig)
-            if right_preprocessed is None:
-                print("❌ ERROR: Cannot find square marker in right image")
-                return {}, None
-            print(f"✅ Square marker extracted: {right_preprocessed.shape}")
-                
-            # Step 4: Extract CMYK marker region from right image
-            print("STEP 4: Extracting CMYK marker from right image...")
-            right_cropped = extract_marker(right_preprocessed)
-            if right_cropped is None:
-                print("❌ ERROR: Cannot find CMYK marker in right image")
-                return {}, None
-            print(f"✅ CMYK marker extracted: {right_cropped.shape}")
+            print(f"✅ Left results: {list(left_results_reg.keys())}")
+            print(f"✅ Right results: {list(right_results_reg.keys())}")
             
-            # Step 5: Detect P points in right image
-            print("STEP 5: Detecting color P points in right image...")
-            right_results = {}
-            
-            for color, hsv_range in HSV.items():
-                print(f"  Analyzing {color} color...")
-                bl_point = detect_bottom_left(right_cropped, hsv_range, min_area_ratio=0.7)
-                if bl_point is not None:
-                    px, py = bl_point
-                    right_results[color] = {
-                        'bottom_left_px': [float(px), float(py)],
-                        'color': color
-                    }
-                    print(f"    ✅ {color}: P point at ({px:.1f}, {py:.1f}) pixels")
-                else:
-                    print(f"    ❌ {color}: P point not detected")
-                    right_results[color] = None
-            
-            # Step 6: Prepare left image results for comparison
-            print("STEP 6: Preparing left image P points for comparison...")
+            # Step 2: Prepare left image results for comparison
+            print("STEP 2: Preparing left image P points for comparison...")
             left_results_cocking = {}
             
             for color, data in left_results_reg.items():
                 if data and 'P_coord_mm' in data:
                     # Convert from mm coordinates back to pixel coordinates for comparison
                     px_mm, py_mm = data['P_coord_mm']
-                    px_px = px_mm / mm_per_pixel_x
+                    # Use mm_per_pixel_y for both X and Y since we're only comparing Y coordinates
+                    px_px = px_mm / (5.0 / left_cropped.shape[1])  # Calculate from image width
                     py_px = py_mm / mm_per_pixel_y
                     
                     left_results_cocking[color] = {
@@ -738,8 +736,8 @@ class AnalysisWorker(QThread):
                     print(f"    ❌ {color}: No valid data from left image")
                     left_results_cocking[color] = None
             
-            # Step 7: Calculate cocking for each color
-            print("STEP 7: Calculating cocking differences...")
+            # Step 3: Calculate cocking for each color
+            print("STEP 3: Calculating cocking differences...")
             cocking_results = {}
             
             print("\nCOCKING ANALYSIS RESULTS:")
@@ -747,7 +745,7 @@ class AnalysisWorker(QThread):
             
             for color in ['C', 'M', 'Y', 'S']:
                 left_data = left_results_cocking.get(color)
-                right_data = right_results.get(color)
+                right_data = right_results_reg.get(color)
                 
                 if left_data and right_data and left_data is not None and right_data is not None:
                     try:
@@ -793,11 +791,11 @@ class AnalysisWorker(QThread):
                         'missing': missing
                     }
             
-            # Step 8: Create debug visualization
-            print("STEP 8: Creating cocking debug visualization...")
+            # Step 4: Create debug visualization
+            print("STEP 4: Creating cocking debug visualization...")
             debug_img = self.create_cocking_debug_image(
                 left_cropped, right_cropped, 
-                left_results_cocking, right_results, 
+                left_results_cocking, right_results_reg, 
                 mm_per_pixel_y
             )
             
