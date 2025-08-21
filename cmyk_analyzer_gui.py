@@ -519,7 +519,7 @@ class AnalysisWorker(QThread):
             base_colors = {
                 'C': ((100,80,80),(130,255,255)),   # Blue (Cyan in printing)
                 'M': ((130,50,70),(170,255,255)),   # Magenta 
-                'Y': ((15,60,60),(35,255,255)),     # Orange (Yellow in printing)
+                'Y': ((10,80,80),(25,255,255)),     # Orange (Yellow in printing) - 더 정확한 범위
             }
             
             # Detect special color
@@ -564,41 +564,91 @@ class AnalysisWorker(QThread):
                 cv2.line(debug_reg, (tx_cv-10, ty_cv+10), (tx_cv+10, ty_cv-10), (0,0,255), 2)
                 cv2.putText(debug_reg, f"T{color}", (tx_cv+12, ty_cv), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
             
+            # First, detect all color regions and their positions
+            detected_colors = {}
+            
             for color, hsv_range in HSV.items():
-                bl = detect_bottom_left(cropped, hsv_range, min_area_ratio=0.7)  # More strict filtering
-                if bl is None:
+                bl = detect_bottom_left(cropped, hsv_range, min_area_ratio=0.7)
+                if bl is not None:
+                    px_px, py_px = bl
+                    detected_colors[color] = {
+                        'pixel_coords': (px_px, py_px),
+                        'bottom_left_coords': pixel_to_bottom_left_coord(px_px, py_px, h_px)
+                    }
+                    print(f"DEBUG: Detected {color} at pixel ({px_px}, {py_px})")
+                else:
+                    print(f"DEBUG: Could not detect {color}")
+                    detected_colors[color] = None
+            
+            # Now map detected colors to their correct positions based on actual image layout
+            # This ensures P points are placed correctly regardless of HSV detection order
+            color_mapping = {}
+            
+            if len([c for c in detected_colors.values() if c is not None]) >= 4:
+                # Sort colors by their Y position (top to bottom) and X position (left to right)
+                valid_colors = [(color, data) for color, data in detected_colors.items() if data is not None]
+                
+                # Sort by Y position first (top to bottom), then by X position (left to right)
+                sorted_colors = sorted(valid_colors, key=lambda x: (x[1]['pixel_coords'][1], x[1]['pixel_coords'][0]))
+                
+                print("DEBUG: Sorted colors by position:")
+                for i, (color, data) in enumerate(sorted_colors):
+                    print(f"  {i}: {color} at ({data['pixel_coords'][0]}, {data['pixel_coords'][1]})")
+                
+                # Map to correct positions: Top-left, Top-right, Bottom-left, Bottom-right
+                if len(sorted_colors) == 4:
+                    # Top-left (Y - Orange)
+                    if sorted_colors[0][1]['pixel_coords'][0] < sorted_colors[1][1]['pixel_coords'][0]:
+                        color_mapping['Y'] = sorted_colors[0]
+                        color_mapping['C'] = sorted_colors[1]
+                        color_mapping['M'] = sorted_colors[2]
+                        color_mapping['S'] = sorted_colors[3]
+                    else:
+                        color_mapping['C'] = sorted_colors[0]
+                        color_mapping['Y'] = sorted_colors[1]
+                        color_mapping['S'] = sorted_colors[2]
+                        color_mapping['M'] = sorted_colors[3]
+                    
+                    print("DEBUG: Color mapping:")
+                    for pos, (color, data) in color_mapping.items():
+                        print(f"  {pos}: {color} at ({data['pixel_coords'][0]}, {data['pixel_coords'][1]})")
+            
+            # Now create results with correct color mapping
+            for color in ['C', 'M', 'Y', 'S']:
+                if color in color_mapping and color_mapping[color] is not None:
+                    data = color_mapping[color]
+                    px_px, py_px = data['pixel_coords']
+                    px_bl, py_bl = data['bottom_left_coords']
+                    
+                    tx_px, ty_px = target_coords[color]
+                    tx_bl, ty_bl = pixel_to_bottom_left_coord(tx_px, ty_px, h_px)
+                    
+                    dx_px = tx_bl - px_bl
+                    dy_px = ty_bl - py_bl
+                    
+                    px_mm = px_bl * mm_per_pixel_x
+                    py_mm = py_bl * mm_per_pixel_y
+                    tx_mm = tx_bl * mm_per_pixel_x
+                    ty_mm = ty_bl * mm_per_pixel_y
+                    dx_mm = dx_px * mm_per_pixel_x
+                    dy_mm = dy_px * mm_per_pixel_y
+                    
+                    results_reg[color] = {
+                        'P_coord_mm': (round(px_mm, 3), round(py_mm, 3)),
+                        'T_coord_mm': (round(tx_mm, 3), round(ty_mm, 3)),
+                        'movement_mm': (round(dx_mm, 3), round(dy_mm, 3))
+                    }
+                    
+                    # Debug visualization
+                    px_int, py_int = int(px_px), int(py_px)
+                    cv2.circle(debug_reg, (px_int, py_int), 8, (0,255,0), -1)
+                    cv2.putText(debug_reg, f"P{color}({px_mm:.2f},{py_mm:.2f})", 
+                               (px_int+15, py_int-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+                    cv2.putText(debug_reg, f"Move({dx_mm:.2f},{dy_mm:.2f})", 
+                               (px_int+15, py_int+10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+                else:
+                    print(f"DEBUG: No mapping found for {color}")
                     results_reg[color] = None
-                    continue
-                
-                px_px, py_px = bl
-                px_bl, py_bl = pixel_to_bottom_left_coord(px_px, py_px, h_px)
-                
-                tx_px, ty_px = target_coords[color]
-                tx_bl, ty_bl = pixel_to_bottom_left_coord(tx_px, ty_px, h_px)
-                
-                dx_px = tx_bl - px_bl
-                dy_px = ty_bl - py_bl
-                
-                px_mm = px_bl * mm_per_pixel_x
-                py_mm = py_bl * mm_per_pixel_y
-                tx_mm = tx_bl * mm_per_pixel_x
-                ty_mm = ty_bl * mm_per_pixel_y
-                dx_mm = dx_px * mm_per_pixel_x
-                dy_mm = dy_px * mm_per_pixel_y
-                
-                results_reg[color] = {
-                    'P_coord_mm': (round(px_mm, 3), round(py_mm, 3)),
-                    'T_coord_mm': (round(tx_mm, 3), round(ty_mm, 3)),
-                    'movement_mm': (round(dx_mm, 3), round(dy_mm, 3))
-                }
-                
-                # Debug visualization
-                px_int, py_int = int(px_px), int(py_px)
-                cv2.circle(debug_reg, (px_int, py_int), 8, (0,255,0), -1)
-                cv2.putText(debug_reg, f"P{color}({px_mm:.2f},{py_mm:.2f})", 
-                           (px_int+15, py_int-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
-                cv2.putText(debug_reg, f"Move({dx_mm:.2f},{dy_mm:.2f})", 
-                           (px_int+15, py_int+10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
             
             self.progress.emit("Analysis completed!")
             
