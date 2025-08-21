@@ -641,214 +641,307 @@ class AnalysisWorker(QThread):
             self.error.emit(f"Error during analysis: {str(e)}")
             
     def calculate_cocking(self, HSV, left_cropped, left_results_reg, mm_per_pixel_x, mm_per_pixel_y):
-        """Calculate cocking values by comparing Y coordinates between left and right images"""
-        try:
-            print(f"DEBUG: Calculating cocking with right image: {self.right_image_path}")
-            print(f"DEBUG: Right image path type: {type(self.right_image_path)}")
-            print(f"DEBUG: Right image path is None: {self.right_image_path is None}")
-            print(f"DEBUG: Right image path is empty: {self.right_image_path == ''}")
+        """
+        Calculate cocking values by comparing Y coordinates between left and right images.
+        
+        Cocking Algorithm:
+        1. Process left image and extract P points (already done in left_results_reg)
+        2. Process right image the same way to get P points
+        3. Compare Y positions of corresponding P points between left and right
+        4. Calculate difference: right_y - left_y (positive = right is lower)
+        
+        Args:
+            HSV: Color HSV ranges dictionary
+            left_cropped: Processed left image
+            left_results_reg: Results from left image analysis
+            mm_per_pixel_x: X-axis conversion factor
+            mm_per_pixel_y: Y-axis conversion factor
             
+        Returns:
+            tuple: (cocking_results, debug_image)
+        """
+        try:
+            print("=" * 50)
+            print("COCKING ALGORITHM - STEP BY STEP ANALYSIS")
+            print("=" * 50)
+            
+            # Step 1: Validate right image path
+            print("STEP 1: Validating right image...")
             if not self.right_image_path:
-                print("ERROR: Right image path is empty or None")
+                print("❌ ERROR: No right image provided for cocking analysis")
                 return {}, None
+            print(f"✅ Right image path: {self.right_image_path}")
                 
-            # Load and process right image
+            # Step 2: Load and process right image
+            print("STEP 2: Loading right image...")
             right_orig = cv2.imread(self.right_image_path)
             if right_orig is None:
-                print("Warning: Cannot read right image file")
+                print("❌ ERROR: Cannot read right image file")
                 return {}, None
+            print(f"✅ Right image loaded: {right_orig.shape}")
                 
-            # Process right image the same way as left
-            print("DEBUG: Processing right image for square marker...")
-            print(f"DEBUG: Right image shape: {right_orig.shape}")
+            # Step 3: Extract square marker from right image
+            print("STEP 3: Extracting square marker from right image...")
             right_preprocessed = extract_robust_square_marker(right_orig)
             if right_preprocessed is None:
-                print("ERROR: Cannot find square marker in right image")
-                print("DEBUG: This usually means the image doesn't contain a clear square region")
+                print("❌ ERROR: Cannot find square marker in right image")
                 return {}, None
-            else:
-                print(f"DEBUG: Square marker found, preprocessed shape: {right_preprocessed.shape}")
+            print(f"✅ Square marker extracted: {right_preprocessed.shape}")
                 
-            print("DEBUG: Extracting CMYK marker from right image...")
+            # Step 4: Extract CMYK marker region from right image
+            print("STEP 4: Extracting CMYK marker from right image...")
             right_cropped = extract_marker(right_preprocessed)
             if right_cropped is None:
-                print("ERROR: Cannot find CMYK marker in right image")
-                print("DEBUG: This usually means the image doesn't contain CMYK color boxes")
+                print("❌ ERROR: Cannot find CMYK marker in right image")
                 return {}, None
-            else:
-                print(f"DEBUG: CMYK marker extracted, cropped shape: {right_cropped.shape}")
+            print(f"✅ CMYK marker extracted: {right_cropped.shape}")
             
-            # Analyze right image for Y coordinates
-            right_results_reg = {}
+            # Step 5: Detect P points in right image
+            print("STEP 5: Detecting color P points in right image...")
+            right_results = {}
             
-            # Target coordinates (same as left)
-            target_coords = {
-                'C': (1.0, 3.0),  # Top-left
-                'M': (3.0, 3.0),  # Top-right  
-                'Y': (1.0, 1.0),  # Bottom-left
-                'S': (3.0, 1.0)   # Bottom-right (special color)
-            }
-            
-            # Get Y coordinates from right image
-            print("DEBUG: Detecting colors in right image...")
             for color, hsv_range in HSV.items():
-                print(f"DEBUG: Looking for {color} color in right image...")
+                print(f"  Analyzing {color} color...")
                 bl_point = detect_bottom_left(right_cropped, hsv_range, min_area_ratio=0.7)
                 if bl_point is not None:
                     px, py = bl_point
-                    # Create the same data structure as left image
-                    right_results_reg[color] = {'bottom_left_px': [float(px), float(py)]}
-                    print(f"DEBUG: Found {color} at ({px}, {py})")
-                    print(f"DEBUG: Right data structure for {color}: {right_results_reg[color]}")
+                    right_results[color] = {
+                        'bottom_left_px': [float(px), float(py)],
+                        'color': color
+                    }
+                    print(f"    ✅ {color}: P point at ({px:.1f}, {py:.1f}) pixels")
                 else:
-                    print(f"DEBUG: Could not find {color} in right image")
+                    print(f"    ❌ {color}: P point not detected")
+                    right_results[color] = None
             
-            # Calculate cocking results
-            print(f"DEBUG: Left results: {list(left_results_reg.keys())}")
-            print(f"DEBUG: Right results: {list(right_results_reg.keys())}")
+            # Step 6: Prepare left image results for comparison
+            print("STEP 6: Preparing left image P points for comparison...")
+            left_results_cocking = {}
             
-            # Check if we have enough data for cocking calculation
-            if len(right_results_reg) < 2:
-                print(f"ERROR: Not enough colors detected in right image. Found: {list(right_results_reg.keys())}")
-                print("DEBUG: Need at least 2 colors (C, M, Y, S) to calculate cocking")
-                return {}, None
-            
-            # Convert left results to have bottom_left_px for cocking calculation
-            left_results_for_cocking = {}
             for color, data in left_results_reg.items():
                 if data and 'P_coord_mm' in data:
-                    # Convert P_coord_mm to bottom_left_px format
+                    # Convert from mm coordinates back to pixel coordinates for comparison
                     px_mm, py_mm = data['P_coord_mm']
-                    # Convert mm to pixels using mm_per_pixel
                     px_px = px_mm / mm_per_pixel_x
                     py_px = py_mm / mm_per_pixel_y
-                    left_results_for_cocking[color] = {'bottom_left_px': [px_px, py_px]}
-                    print(f"DEBUG: Converted {color} from mm ({px_mm}, {py_mm}) to px ({px_px}, {py_px})")
+                    
+                    left_results_cocking[color] = {
+                        'bottom_left_px': [px_px, py_px],
+                        'color': color
+                    }
+                    print(f"    ✅ {color}: P point at ({px_px:.1f}, {py_px:.1f}) pixels")
                 else:
-                    print(f"DEBUG: Skipping {color} - no P_coord_mm data")
+                    print(f"    ❌ {color}: No valid data from left image")
+                    left_results_cocking[color] = None
             
+            # Step 7: Calculate cocking for each color
+            print("STEP 7: Calculating cocking differences...")
             cocking_results = {}
-            cocking_debug_img = self.create_cocking_debug_image(left_cropped, right_cropped, left_results_for_cocking, right_results_reg, mm_per_pixel_y)
+            
+            print("\nCOCKING ANALYSIS RESULTS:")
+            print("-" * 40)
             
             for color in ['C', 'M', 'Y', 'S']:
-                left_data = left_results_for_cocking.get(color)
-                right_data = right_results_reg.get(color)
+                left_data = left_results_cocking.get(color)
+                right_data = right_results.get(color)
                 
-                if left_data and right_data:
+                if left_data and right_data and left_data is not None and right_data is not None:
                     try:
-                        # Get Y coordinates (bottom_left_px[1] is Y coordinate)
+                        # Extract Y coordinates (bottom-left coordinate system)
                         left_y_px = left_data['bottom_left_px'][1]
                         right_y_px = right_data['bottom_left_px'][1]
                         
-                        # Calculate Y difference in pixels (right - left)
+                        # Calculate Y difference in pixels
+                        # Positive = right is lower than left
+                        # Negative = right is higher than left
                         y_diff_px = right_y_px - left_y_px
                         
-                        # Convert to mm
+                        # Convert to millimeters
                         y_diff_mm = y_diff_px * mm_per_pixel_y
                         
                         cocking_results[color] = {
-                            'left_y_px': left_y_px,
-                            'right_y_px': right_y_px,
-                            'y_diff_px': y_diff_px,
-                            'cocking_mm': round(y_diff_mm, 3)
+                            'left_y_px': round(left_y_px, 2),
+                            'right_y_px': round(right_y_px, 2),
+                            'y_diff_px': round(y_diff_px, 2),
+                            'cocking_mm': round(y_diff_mm, 3),
+                            'status': 'OK'
                         }
                         
-                        print(f"Cocking {color}: Left Y={left_y_px:.1f}px, Right Y={right_y_px:.1f}px, Diff={y_diff_mm:.3f}mm")
+                        status_symbol = "🔺" if y_diff_mm > 0 else "🔻" if y_diff_mm < 0 else "➡️"
+                        print(f"{color}: Left={left_y_px:.1f}px, Right={right_y_px:.1f}px → {status_symbol} {y_diff_mm:+.3f}mm")
+                        
                     except Exception as e:
-                        print(f"ERROR: Failed to calculate cocking for {color}: {str(e)}")
-                        cocking_results[color] = None
+                        print(f"❌ {color}: Calculation failed - {str(e)}")
+                        cocking_results[color] = {
+                            'status': 'Error',
+                            'error': str(e)
+                        }
                 else:
-                    print(f"DEBUG: Skipping {color} - missing data")
-                    cocking_results[color] = None
+                    missing = []
+                    if not left_data or left_data is None:
+                        missing.append("left")
+                    if not right_data or right_data is None:
+                        missing.append("right")
                     
-            return cocking_results, cocking_debug_img
+                    print(f"❌ {color}: Missing data from {', '.join(missing)} image(s)")
+                    cocking_results[color] = {
+                        'status': 'Missing data',
+                        'missing': missing
+                    }
+            
+            # Step 8: Create debug visualization
+            print("STEP 8: Creating cocking debug visualization...")
+            debug_img = self.create_cocking_debug_image(
+                left_cropped, right_cropped, 
+                left_results_cocking, right_results, 
+                mm_per_pixel_y
+            )
+            
+            print("=" * 50)
+            print("COCKING ANALYSIS COMPLETED")
+            print("=" * 50)
+            
+            return cocking_results, debug_img
             
         except Exception as e:
-            print(f"Error calculating cocking: {str(e)}")
+            print(f"❌ CRITICAL ERROR in cocking calculation: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {}, None
     
     def create_cocking_debug_image(self, left_cropped, right_cropped, left_results, right_results, mm_per_pixel_y):
-        """Create debug image showing Y coordinate differences between left and right images"""
+        """
+        Create comprehensive debug visualization for cocking analysis.
+        Shows side-by-side comparison of left and right images with P points and Y differences.
+        """
         try:
-            print("DEBUG: Creating cocking debug image...")
-            print(f"DEBUG: Left image shape: {left_cropped.shape}")
-            print(f"DEBUG: Right image shape: {right_cropped.shape}")
+            print("Creating enhanced cocking debug visualization...")
             
-            # Get dimensions of both images
+            # Get dimensions
             left_h, left_w = left_cropped.shape[:2]
             right_h, right_w = right_cropped.shape[:2]
             
-            # Use the larger height to accommodate both images
-            max_h = max(left_h, right_h)
-            combined_img = np.zeros((max_h, left_w + right_w, 3), dtype=np.uint8)
+            # Create side-by-side layout with extra space for annotations
+            margin = 100  # Space for labels and measurements
+            max_h = max(left_h, right_h) + margin
+            combined_w = left_w + right_w + 40  # 40px gap between images
+            
+            # Initialize combined image
+            combined_img = np.zeros((max_h, combined_w, 3), dtype=np.uint8)
+            combined_img.fill(50)  # Dark gray background
             
             # Place left image
-            combined_img[:left_h, :left_w] = left_cropped
+            y_offset = margin // 2
+            combined_img[y_offset:y_offset + left_h, :left_w] = left_cropped
             
-            # Place right image (resize if necessary)
-            if right_h != left_h:
-                # Resize right image to match left image height
-                right_resized = cv2.resize(right_cropped, (right_w, left_h))
-                combined_img[:left_h, left_w:left_w + right_w] = right_resized
-                print(f"DEBUG: Right image resized from {right_h}x{right_w} to {left_h}x{right_w}")
-            else:
-                combined_img[:right_h, left_w:left_w + right_w] = right_cropped
-                print("DEBUG: Right image placed without resizing")
+            # Place right image with gap
+            right_x_offset = left_w + 40
+            combined_img[y_offset:y_offset + right_h, right_x_offset:right_x_offset + right_w] = right_cropped
             
-            # Draw Y coordinate lines and differences
-            colors_map = {'C': (0, 255, 255), 'M': (255, 0, 255), 'Y': (255, 255, 0), 'S': (128, 128, 128)}
+            # Add image labels
+            cv2.putText(combined_img, "LEFT IMAGE", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.putText(combined_img, "RIGHT IMAGE", (right_x_offset + 10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
             
-            print(f"DEBUG: Left results structure: {left_results}")
-            print(f"DEBUG: Right results structure: {right_results}")
+            # Draw P points and connections
+            colors_rgb = {
+                'C': (255, 255, 0),    # Cyan -> Yellow for visibility
+                'M': (255, 0, 255),    # Magenta
+                'Y': (0, 255, 255),    # Yellow -> Cyan for visibility
+                'S': (0, 255, 0)       # Special -> Green
+            }
+            
+            measurement_y = max_h - 60  # Y position for measurements text
             
             for i, color in enumerate(['C', 'M', 'Y', 'S']):
                 left_data = left_results.get(color)
                 right_data = right_results.get(color)
+                color_rgb = colors_rgb.get(color, (255, 255, 255))
                 
-                print(f"DEBUG: Processing color {color}")
-                print(f"DEBUG: Left data for {color}: {left_data}")
-                print(f"DEBUG: Right data for {color}: {right_data}")
-                
-                if left_data and right_data:
-                    try:
-                        left_y = int(left_data['bottom_left_px'][1])
-                        right_y = int(right_data['bottom_left_px'][1])
-                        print(f"DEBUG: Y coordinates - Left: {left_y}, Right: {right_y}")
-                        
-                        draw_color = colors_map.get(color, (255, 255, 255))
-                        
-                        # Draw horizontal lines at Y coordinates
-                        cv2.line(combined_img, (0, left_y), (left_w-1, left_y), draw_color, 2)
-                        cv2.line(combined_img, (left_w, right_y), (left_w + right_w-1, right_y), draw_color, 2)
-                        
-                        # Draw vertical connecting line
-                        cv2.line(combined_img, (left_w-1, left_y), (left_w, right_y), draw_color, 1)
-                        
-                        # Calculate difference
-                        y_diff_px = right_y - left_y
-                        y_diff_mm = y_diff_px * mm_per_pixel_y
-                        
-                        # Add text labels
-                        text_y = 30 + i * 25
-                        cv2.putText(combined_img, f"{color}: {y_diff_mm:+.3f}mm", (10, text_y), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, draw_color, 2)
-                        
-                    except KeyError as e:
-                        print(f"ERROR: Key error for {color}: {e}")
-                        print(f"DEBUG: Left data keys: {list(left_data.keys()) if left_data else 'None'}")
-                        print(f"DEBUG: Right data keys: {list(right_data.keys()) if right_data else 'None'}")
-                        continue
+                if left_data and right_data and left_data is not None and right_data is not None:
+                    # Get coordinates
+                    left_x, left_y = left_data['bottom_left_px']
+                    right_x, right_y = right_data['bottom_left_px']
+                    
+                    # Adjust coordinates for display
+                    left_display_x = int(left_x)
+                    left_display_y = int(left_y + y_offset)
+                    right_display_x = int(right_x + right_x_offset)
+                    right_display_y = int(right_y + y_offset)
+                    
+                    # Draw P points
+                    cv2.circle(combined_img, (left_display_x, left_display_y), 6, color_rgb, -1)
+                    cv2.circle(combined_img, (left_display_x, left_display_y), 8, (255, 255, 255), 2)
+                    cv2.circle(combined_img, (right_display_x, right_display_y), 6, color_rgb, -1)
+                    cv2.circle(combined_img, (right_display_x, right_display_y), 8, (255, 255, 255), 2)
+                    
+                    # Label P points
+                    cv2.putText(combined_img, f"P{color}", 
+                               (left_display_x + 12, left_display_y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_rgb, 2)
+                    cv2.putText(combined_img, f"P{color}", 
+                               (right_display_x + 12, right_display_y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_rgb, 2)
+                    
+                    # Draw horizontal line connecting P points (for Y comparison)
+                    line_y = (left_display_y + right_display_y) // 2
+                    cv2.line(combined_img, (left_display_x, line_y), 
+                            (right_display_x, line_y), color_rgb, 2)
+                    
+                    # Calculate and display Y difference
+                    y_diff_px = right_y - left_y
+                    y_diff_mm = y_diff_px * mm_per_pixel_y
+                    
+                    # Add measurement text
+                    measurement_text = f"{color}: {y_diff_mm:+.3f}mm"
+                    text_x = 10 + (i * 120)
+                    cv2.putText(combined_img, measurement_text, 
+                               (text_x, measurement_y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_rgb, 2)
+                    
+                    # Add direction arrow in the middle of connection line
+                    mid_x = (left_display_x + right_display_x) // 2
+                    mid_y = line_y
+                    
+                    if abs(y_diff_mm) > 0.001:  # Only show arrow if difference is significant
+                        arrow_color = (0, 255, 0) if y_diff_mm > 0 else (0, 0, 255)  # Green up, Red down
+                        if y_diff_mm > 0:
+                            # Right is lower - draw down arrow
+                            cv2.arrowedLine(combined_img, (mid_x, mid_y - 10), (mid_x, mid_y + 10), arrow_color, 2)
+                        else:
+                            # Right is higher - draw up arrow
+                            cv2.arrowedLine(combined_img, (mid_x, mid_y + 10), (mid_x, mid_y - 10), arrow_color, 2)
+                else:
+                    # Show missing data
+                    measurement_text = f"{color}: N/A"
+                    text_x = 10 + (i * 120)
+                    cv2.putText(combined_img, measurement_text, 
+                               (text_x, measurement_y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (128, 128, 128), 2)
             
-            # Add titles
-            cv2.putText(combined_img, "LEFT", (left_w//2-30, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-            cv2.putText(combined_img, "RIGHT", (left_w + right_w//2-40, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            # Add legend
+            legend_y = max_h - 30
+            cv2.putText(combined_img, "Green Arrow: Right Lower | Red Arrow: Right Higher", 
+                       (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
-            print("DEBUG: Cocking debug image created successfully")
+            print("✅ Cocking debug image created successfully")
             return combined_img
             
         except Exception as e:
-            print(f"ERROR: Failed to create cocking debug image: {str(e)}")
-            return None
+            print(f"❌ Error creating cocking debug image: {str(e)}")
+            # Return simple side-by-side image as fallback
+            try:
+                left_h, left_w = left_cropped.shape[:2]
+                right_h, right_w = right_cropped.shape[:2]
+                max_h = max(left_h, right_h)
+                combined_img = np.zeros((max_h, left_w + right_w, 3), dtype=np.uint8)
+                combined_img[:left_h, :left_w] = left_cropped
+                combined_img[:right_h, left_w:] = right_cropped
+                return combined_img
+            except:
+                return None
+
             
     def create_cmyk_detection_image(self, cropped, HSV):
         """Create image showing CMYK color detection results"""
