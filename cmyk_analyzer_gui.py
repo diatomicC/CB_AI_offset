@@ -639,7 +639,7 @@ class AnalysisWorker(QThread):
                             
                             # Now calculate cocking using both left and right results
                             cocking_results, cocking_debug_img = self.calculate_cocking_from_results(
-                                left_results_reg, right_results_reg, cropped, right_cropped, mm_per_pixel_y
+                                results_reg, right_results_reg, cropped, right_cropped, mm_per_pixel_y
                             )
                         else:
                             print("❌ Could not extract CMYK marker from right image")
