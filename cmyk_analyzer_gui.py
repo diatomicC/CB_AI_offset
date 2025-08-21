@@ -519,41 +519,21 @@ class AnalysisWorker(QThread):
             base_colors = {
                 'C': ((100,80,80),(130,255,255)),   # Blue (Cyan in printing)
                 'M': ((130,50,70),(170,255,255)),   # Magenta 
-                'Y': ((10,80,80),(25,255,255)),     # Orange (Yellow in printing) - 더 정확한 범위
+                'Y': ((20,100,100),(30,255,255)),   # Yellow (fixed color)
             }
             
-            # Detect special color (Yellow)
-            self.progress.emit("Detecting special color (Yellow)...")
+            # Detect special color (any color in top-left position)
+            self.progress.emit("Detecting special color (any color in top-left)...")
             
-            # Direct HSV range for Yellow (Special color)
-            yellow_hsv_range = ((20, 100, 100), (30, 255, 255))  # Yellow HSV range
+            # Use the original complex detection for special color
+            # This will find any color that's not C, M, Y in the image
+            special_hsv_range, special_color_name = detect_special_color(cropped, base_colors)
             
-            # Test if yellow color exists in the image
-            hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
-            yellow_mask = cv2.inRange(hsv, np.array(yellow_hsv_range[0]), np.array(yellow_hsv_range[1]))
+            if special_hsv_range is None:
+                self.error.emit("Special color could not be detected. Please ensure the image contains a clear special color region in the top-left position.")
+                return
             
-            # Check if yellow color is detected
-            if cv2.countNonZero(yellow_mask) > 1000:  # At least 1000 yellow pixels
-                special_hsv_range = yellow_hsv_range
-                special_color_name = "Yellow"
-                print(f"✅ Special color (Yellow) detected successfully")
-            else:
-                # Fallback: try broader yellow range
-                yellow_hsv_range_fallback = ((15, 80, 80), (35, 255, 255))
-                yellow_mask_fallback = cv2.inRange(hsv, np.array(yellow_hsv_range_fallback[0]), np.array(yellow_hsv_range_fallback[1]))
-                
-                if cv2.countNonZero(yellow_mask_fallback) > 1000:
-                    special_hsv_range = yellow_hsv_range_fallback
-                    special_color_name = "Yellow_Fallback"
-                    print(f"✅ Special color (Yellow) detected with fallback range")
-                else:
-                    # Last resort: use the original complex detection
-                    print(f"⚠️ Direct yellow detection failed, trying complex detection...")
-                    special_hsv_range, special_color_name = detect_special_color(cropped, base_colors)
-                    
-                    if special_hsv_range is None:
-                        self.error.emit("Special color could not be detected. Please ensure the image contains a clear yellow region.")
-                        return
+            print(f"✅ Special color detected: {special_color_name}")
             
             # Complete color ranges (including special color)
             HSV = base_colors.copy()
@@ -564,13 +544,13 @@ class AnalysisWorker(QThread):
             
             # Target coordinates (bottom-left origin)
             # Based on actual image layout: 2x2 grid
-            # Top-left: Orange (Y), Top-right: Blue (C)
-            # Bottom-left: Magenta (M), Bottom-right: Yellow (S)
+            # Top-left: Special color (any color), Top-right: Blue (C)
+            # Bottom-left: Magenta (M), Bottom-right: Yellow (Y)
             target_coords = {
-                'Y': (w_px/10, h_px - h_px*6/10),      # Orange - Top-left
+                'S': (w_px/10, h_px - h_px*6/10),      # Special color - Top-left (any color)
                 'C': (w_px*6/10, h_px - h_px*6/10),    # Blue - Top-right  
                 'M': (w_px/10, h_px - h_px/10),         # Magenta - Bottom-left
-                'S': (w_px*6/10, h_px - h_px/10)        # Yellow - Bottom-right (Special)
+                'Y': (w_px*6/10, h_px - h_px/10)        # Yellow - Bottom-right
             }
             
             self.progress.emit("Analyzing color registration...")
@@ -622,17 +602,18 @@ class AnalysisWorker(QThread):
                 
                 # Map to correct positions: Top-left, Top-right, Bottom-left, Bottom-right
                 if len(sorted_colors) == 4:
-                    # Top-left (Y - Orange)
+                    # Top-left (S - Special color), Top-right (C - Blue)
+                    # Bottom-left (M - Magenta), Bottom-right (Y - Yellow)
                     if sorted_colors[0][1]['pixel_coords'][0] < sorted_colors[1][1]['pixel_coords'][0]:
-                        color_mapping['Y'] = sorted_colors[0]
-                        color_mapping['C'] = sorted_colors[1]
-                        color_mapping['M'] = sorted_colors[2]
-                        color_mapping['S'] = sorted_colors[3]
+                        color_mapping['S'] = sorted_colors[0]  # Top-left (Special)
+                        color_mapping['C'] = sorted_colors[1]  # Top-right (Blue)
+                        color_mapping['M'] = sorted_colors[2]  # Bottom-left (Magenta)
+                        color_mapping['Y'] = sorted_colors[3]  # Bottom-right (Yellow)
                     else:
-                        color_mapping['C'] = sorted_colors[0]
-                        color_mapping['Y'] = sorted_colors[1]
-                        color_mapping['S'] = sorted_colors[2]
-                        color_mapping['M'] = sorted_colors[3]
+                        color_mapping['C'] = sorted_colors[0]  # Top-left (Blue)
+                        color_mapping['S'] = sorted_colors[1]  # Top-right (Special)
+                        color_mapping['Y'] = sorted_colors[2]  # Bottom-left (Yellow)
+                        color_mapping['M'] = sorted_colors[3]  # Bottom-right (Magenta)
                     
                     print("DEBUG: Color mapping:")
                     for pos, (color, data) in color_mapping.items():
