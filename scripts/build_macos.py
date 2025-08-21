@@ -157,7 +157,7 @@ def create_app_bundle():
         f.write(plist_content)
     
     # Copy icon (if available)
-    icon_path = Path("assets/icons/MyIcon.icns")
+    icon_path = Path("../assets/icons/MyIcon.icns")
     if icon_path.exists():
         shutil.copy2(icon_path, resources_dir / "AppIcon.icns")
         print("✅ Icon included in app bundle.")

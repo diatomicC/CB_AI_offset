@@ -34,7 +34,7 @@ def install_pyinstaller():
 
 def check_icon():
     """Check if icon file exists."""
-    icon_path = Path("assets/icons/app_icon.ico")
+    icon_path = Path("../assets/icons/app_icon.ico")
     if icon_path.exists():
         print(f"✅ Icon file found: {icon_path}")
         return True
@@ -150,7 +150,7 @@ Section "CMYK Analyzer" SecMain
     
     ; Copy files
     File "dist\\CMYK_Analyzer.exe"
-    File "assets\\icons\\app_icon.ico"
+    File "..\\assets\\icons\\app_icon.ico"
     
     ; Create start menu
     CreateDirectory "$SMPROGRAMS\\CMYK Analyzer"

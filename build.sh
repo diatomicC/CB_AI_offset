@@ -10,7 +10,17 @@ PLATFORM=$(uname -s)
 case $PLATFORM in
     "Darwin")
         echo "🍎 macOS detected - Running macOS build..."
-        ./scripts/build.sh
+        # PyInstaller로 직접 빌드 (spec 파일 사용)
+        echo "🔨 Building with PyInstaller..."
+        pyinstaller scripts/CMYK_Analyzer.spec
+        if [ $? -eq 0 ]; then
+            echo "✅ macOS build completed!"
+            echo "📁 Generated files:"
+            echo "   - Single executable: dist/CMYK_Analyzer"  
+            echo "   - App bundle: dist/CMYK_Analyzer.app"
+        else
+            echo "❌ macOS build failed."
+        fi
         ;;
     "Linux")
         echo "🐧 Linux detected - Running Docker build for Windows..."
@@ -18,8 +28,8 @@ case $PLATFORM in
         ;;
     *)
         echo "❓ Unknown platform: $PLATFORM"
-        echo "   Available build scripts:"
-        echo "   - ./scripts/build.sh (macOS)"
+        echo "   Available build options:"
+        echo "   - python scripts/build_macos.py (macOS)"
         echo "   - ./scripts/build_windows_docker.sh (Windows via Docker)"
         echo "   - ./scripts/build_windows_simple.sh (Simple Windows build)"
         ;;

@@ -72,9 +72,8 @@ def detect_bottom_left(img: np.ndarray, hsv_range: tuple, min_area_ratio=0.5):
         approx = cv2.approxPolyDP(hull, eps, True).reshape(-1,2)
         if len(approx)==4 and cv2.isContourConvex(approx):
             rect = order_points(approx)
-            # Find bottom-left point (among points with large y, choose the one with smaller x)
-            bottom = sorted(rect, key=lambda p:p[1], reverse=True)[:2]
-            bl = tuple(sorted(bottom, key=lambda p:p[0])[0])
+            # rect[3] is already bottom-left point (0, 1)
+            bl = tuple(rect[3])
             return bl
     return None
 

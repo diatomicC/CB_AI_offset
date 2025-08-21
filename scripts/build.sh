@@ -32,7 +32,9 @@ rm -rf build dist __pycache__
 
 # Build with PyInstaller
 echo "🔨 Building with PyInstaller..."
+cd "$(dirname "$0")"  # scripts 폴더로 이동
 pyinstaller CMYK_Analyzer.spec
+cd - > /dev/null  # 원래 폴더로 복귀
 
 if [ $? -eq 0 ]; then
     echo ""
