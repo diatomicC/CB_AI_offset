@@ -538,14 +538,13 @@ class AnalysisWorker(QThread):
             self.special_color_name = special_color_name
             
             # Target coordinates (bottom-left origin)
-            # Based on actual image layout: 2x2 grid
-            # Top-left: Orange (Y), Top-right: Blue (C)
-            # Bottom-left: Magenta (M), Bottom-right: Yellow (S)
+            # Each color's T point should be at the corresponding corner of its own color box
+            # Based on 2x2 layout: Top-left(S), Top-right(C), Bottom-left(M), Bottom-right(Y)
             target_coords = {
-                'Y': (w_px/10, h_px - h_px*6/10),      # Orange - Top-left
-                'C': (w_px*6/10, h_px - h_px*6/10),    # Blue - Top-right  
-                'M': (w_px/10, h_px - h_px/10),         # Magenta - Bottom-left
-                'S': (w_px*6/10, h_px - h_px/10)        # Yellow - Bottom-right (Special)
+                'S': (w_px*4/10, h_px*4/10),           # Special(Top-left box)
+                'C': (w_px*6/10, h_px*4/10),           # Blue(Top-right box) 
+                'M': (w_px*4/10, h_px*6/10),           # Magenta(Bottom-left box) 
+                'Y': (w_px*6/10, h_px*6/10)            # Yellow(Bottom-right box) 
             }
             
             self.progress.emit("Analyzing color registration...")
@@ -564,13 +563,65 @@ class AnalysisWorker(QThread):
                 cv2.line(debug_reg, (tx_cv-10, ty_cv+10), (tx_cv+10, ty_cv-10), (0,0,255), 2)
                 cv2.putText(debug_reg, f"T{color}", (tx_cv+12, ty_cv), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
             
+            # Helper functions for robust P point selection
+            def _is_inside(x: float, y: float, w: int, h: int, margin: int = 0) -> bool:
+                return margin <= x < (w - margin) and margin <= y < (h - margin)
+
+            def _get_corner_index_for_color(color_name: str) -> int:
+                # rect order: [top-left(0), top-right(1), bottom-right(2), bottom-left(3)]
+                # P point corner mapping for each color:
+                mapping = {
+                    'S': 2,  # 우측하단 (bottom-right)
+                    'C': 3,  # 좌측하단 (bottom-left)
+                    'M': 1,  # 우측상단 (top-right)
+                    'Y': 0,  # 좌측상단 (top-left)
+                }
+                return mapping.get(color_name, 3)
+
+            def _safe_point_towards_center(corners: np.ndarray, corner_idx: int, fraction: float = 0.2) -> tuple[float, float]:
+                # Move from the chosen corner towards the box center to guarantee it's inside
+                cx = float(np.mean(corners[:, 0]))
+                cy = float(np.mean(corners[:, 1]))
+                x0 = float(corners[corner_idx][0])
+                y0 = float(corners[corner_idx][1])
+                x = x0 + (cx - x0) * fraction
+                y = y0 + (cy - y0) * fraction
+                return x, y
+
             for color, hsv_range in HSV.items():
-                bl = detect_bottom_left(cropped, hsv_range, min_area_ratio=0.7)  # More strict filtering
-                if bl is None:
+                # Use corner detection to get all 4 corners
+                rect = detect_square_corners(cropped, hsv_range, min_area_ratio=0.7)
+                px_px = py_px = None
+                
+                if rect is not None:
+                    # rect: [top-left(0), top-right(1), bottom-right(2), bottom-left(3)]
+                    # Select the specific corner for each color
+                    corner_idx = _get_corner_index_for_color(color)
+                    candidate_x, candidate_y = rect[corner_idx]
+                    
+                    # Check if the corner is inside the image bounds
+                    if _is_inside(candidate_x, candidate_y, cropped.shape[1], cropped.shape[0], margin=5):
+                        # Use the corner directly
+                        px_px, py_px = float(candidate_x), float(candidate_y)
+                        print(f"✅ {color}: Using {['top-left', 'top-right', 'bottom-right', 'bottom-left'][corner_idx]} corner at ({px_px:.1f}, {py_px:.1f})")
+                    else:
+                        # Move slightly inward from the corner
+                        candidate_x, candidate_y = _safe_point_towards_center(rect, corner_idx, fraction=0.15)
+                        px_px, py_px = float(candidate_x), float(candidate_y)
+                        print(f"⚠️ {color}: Corner outside bounds, using safe inward point at ({px_px:.1f}, {py_px:.1f})")
+                else:
+                    # Fallback to legacy bottom-left detector if corner detection fails
+                    print(f"⚠️ {color}: Corner detection failed, using fallback method")
+                    bl = detect_bottom_left(cropped, hsv_range, min_area_ratio=0.7)
+                    if bl is not None:
+                        px_px, py_px = float(bl[0]), float(bl[1])
+                        print(f"✅ {color}: Fallback detection at ({px_px:.1f}, {py_px:.1f})")
+
+                if px_px is None or py_px is None:
+                    print(f"❌ {color}: P point detection failed completely")
                     results_reg[color] = None
                     continue
-                
-                px_px, py_px = bl
+
                 px_bl, py_bl = pixel_to_bottom_left_coord(px_px, py_px, h_px)
                 
                 tx_px, ty_px = target_coords[color]
@@ -593,9 +644,10 @@ class AnalysisWorker(QThread):
                     'P_coord_px': (px_px, py_px)  # Add pixel coordinates for cocking
                 }
                 
-                # Debug visualization
-                px_int, py_int = int(px_px), int(py_px)
+                # Debug visualization for registration image
+                px_int, py_int = int(round(px_px)), int(round(py_px))
                 cv2.circle(debug_reg, (px_int, py_int), 8, (0,255,0), -1)
+                cv2.circle(debug_reg, (px_int, py_int), 10, (0,0,0), 2)
                 cv2.putText(debug_reg, f"P{color}({px_mm:.2f},{py_mm:.2f})", 
                            (px_int+15, py_int-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
                 cv2.putText(debug_reg, f"Move({dx_mm:.2f},{dy_mm:.2f})", 
@@ -620,23 +672,85 @@ class AnalysisWorker(QThread):
                         # Extract CMYK marker region from right image
                         right_cropped = extract_marker(right_preprocessed)
                         if right_cropped is not None:
-                            # Analyze right image using same HSV ranges and target coordinates
+                            # Apply same P and T calculation logic to right image
+                            right_h_px, right_w_px = right_cropped.shape[:2]
+                            right_mm_per_pixel_x = 5.0 / right_w_px
+                            right_mm_per_pixel_y = 5.0 / right_h_px
+                            
+                            # Use same target coordinates for right image
+                            right_target_coords = {
+                                'S': (right_w_px*4/10, right_h_px*4/10),           # Special(Top-left box)
+                                'C': (right_w_px*6/10, right_h_px*4/10),           # Blue(Top-right box) 
+                                'M': (right_w_px*4/10, right_h_px*6/10),           # Magenta(Bottom-left box) 
+                                'Y': (right_w_px*6/10, right_h_px*6/10)            # Yellow(Bottom-right box) 
+                            }
+                            
+                            # Helper functions (same as left image)
+                            def _is_inside_right(x: float, y: float, w: int, h: int, margin: int = 0) -> bool:
+                                return margin <= x < (w - margin) and margin <= y < (h - margin)
+
+                            def _get_corner_index_for_color_right(color_name: str) -> int:
+                                # Same corner mapping as left image
+                                mapping = {
+                                    'S': 2,  # 우측하단 (bottom-right)
+                                    'C': 3,  # 좌측하단 (bottom-left)
+                                    'M': 1,  # 우측상단 (top-right)
+                                    'Y': 0,  # 좌측상단 (top-left)
+                                }
+                                return mapping.get(color_name, 3)
+
+                            def _safe_point_towards_center_right(corners: np.ndarray, corner_idx: int, fraction: float = 0.2) -> tuple[float, float]:
+                                cx = float(np.mean(corners[:, 0]))
+                                cy = float(np.mean(corners[:, 1]))
+                                x0 = float(corners[corner_idx][0])
+                                y0 = float(corners[corner_idx][1])
+                                x = x0 + (cx - x0) * fraction
+                                y = y0 + (cy - y0) * fraction
+                                return x, y
+                            
                             for color, hsv_range in HSV.items():
-                                bl = detect_bottom_left(right_cropped, hsv_range, min_area_ratio=0.7)
-                                if bl is not None:
-                                    px_px, py_px = bl
-                                    px_bl, py_bl = pixel_to_bottom_left_coord(px_px, py_px, right_cropped.shape[0])
+                                # Use corner detection to get all 4 corners (same as left)
+                                rect = detect_square_corners(right_cropped, hsv_range, min_area_ratio=0.7)
+                                px_px = py_px = None
+                                
+                                if rect is not None:
+                                    # Select the specific corner for each color
+                                    corner_idx = _get_corner_index_for_color_right(color)
+                                    candidate_x, candidate_y = rect[corner_idx]
                                     
-                                    tx_px, ty_px = target_coords[color]
-                                    tx_bl, ty_bl = pixel_to_bottom_left_coord(tx_px, ty_px, right_cropped.shape[0])
-                                    
-                                    right_results_reg[color] = {
-                                        'P_coord_mm': (px_bl * mm_per_pixel_x, py_bl * mm_per_pixel_y),
-                                        'T_coord_mm': (tx_bl * mm_per_pixel_x, ty_bl * mm_per_pixel_y),
-                                        'bottom_left_px': [px_px, py_px]
-                                    }
+                                    # Check if the corner is inside the image bounds
+                                    if _is_inside_right(candidate_x, candidate_y, right_cropped.shape[1], right_cropped.shape[0], margin=5):
+                                        # Use the corner directly
+                                        px_px, py_px = float(candidate_x), float(candidate_y)
+                                        print(f"✅ RIGHT {color}: Using {['top-left', 'top-right', 'bottom-right', 'bottom-left'][corner_idx]} corner at ({px_px:.1f}, {py_px:.1f})")
+                                    else:
+                                        # Move slightly inward from the corner
+                                        candidate_x, candidate_y = _safe_point_towards_center_right(rect, corner_idx, fraction=0.15)
+                                        px_px, py_px = float(candidate_x), float(candidate_y)
+                                        print(f"⚠️ RIGHT {color}: Corner outside bounds, using safe inward point at ({px_px:.1f}, {py_px:.1f})")
                                 else:
+                                    # Fallback to legacy bottom-left detector
+                                    print(f"⚠️ RIGHT {color}: Corner detection failed, using fallback method")
+                                    bl = detect_bottom_left(right_cropped, hsv_range, min_area_ratio=0.7)
+                                    if bl is not None:
+                                        px_px, py_px = float(bl[0]), float(bl[1])
+                                        print(f"✅ RIGHT {color}: Fallback detection at ({px_px:.1f}, {py_px:.1f})")
+
+                                if px_px is None or py_px is None:
+                                    print(f"❌ RIGHT {color}: P point detection failed completely")
                                     right_results_reg[color] = None
+                                    continue
+
+                                px_bl, py_bl = pixel_to_bottom_left_coord(px_px, py_px, right_h_px)
+                                
+                                tx_px, ty_px = right_target_coords[color]
+                                tx_bl, ty_bl = pixel_to_bottom_left_coord(tx_px, ty_px, right_h_px)
+                                
+                                right_results_reg[color] = {
+                                    'P_coord_mm': (px_bl * right_mm_per_pixel_x, py_bl * right_mm_per_pixel_y),
+                                    'T_coord_mm': (tx_bl * right_mm_per_pixel_x, ty_bl * right_mm_per_pixel_y),
+                                    'bottom_left_px': [px_px, py_px]
+                                }
                             
                             # Now calculate cocking using both left and right results
                             cocking_results, cocking_debug_img = self.calculate_cocking_from_results(
