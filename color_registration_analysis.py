@@ -248,20 +248,22 @@ def main():
             special_color_range = detect_special_color(cropped, HSV)
             
             if special_color_range is None:
-                print("❌ Unable to detect special color.")
-                continue
-            
-            # Add special color to HSV ranges
-            HSV['S'] = special_color_range
-            print(f"✅ Special color detected: HSV range {special_color_range}")
+                print("⚠️  Special color not detected. Continuing with CMY colors only.")
+                # Special color 없이 CMY만으로 분석 계속
+                HSV_analysis = {k: v for k, v in HSV.items() if k in ['C', 'M', 'Y']}
+            else:
+                # Add special color to HSV ranges
+                HSV['S'] = special_color_range
+                HSV_analysis = HSV.copy()
+                print(f"✅ Special color detected: HSV range {special_color_range}")
             
             # Target coordinates (based on bottom-left origin (0,0))
-            target_coords = {
-                'S': (w_px/10, h_px - h_px*6/10),    # Special color in K position
-                'C': (w_px*6/10, h_px - h_px*6/10),  # (length*6/10, height*4/10) from bottom
-                'M': (w_px/10, h_px - h_px/10),      # (length/10, height*9/10) from bottom
-                'Y': (w_px*6/10, h_px - h_px/10)     # (length*6/10, height*9/10) from bottom
-            }
+            target_coords = {}
+            if 'S' in HSV_analysis:
+                target_coords['S'] = (w_px/10, h_px - h_px*6/10)    # Special color in K position
+            target_coords['C'] = (w_px*6/10, h_px - h_px*6/10)  # (length*6/10, height*4/10) from bottom
+            target_coords['M'] = (w_px/10, h_px - h_px/10)      # (length/10, height*9/10) from bottom
+            target_coords['Y'] = (w_px*6/10, h_px - h_px/10)     # (length*6/10, height*9/10) from bottom
             
             results_reg = {}
             debug_reg = cropped.copy()
@@ -277,7 +279,7 @@ def main():
                 cv2.putText(debug_reg, f"T{color}", (tx_cv+12, ty_cv), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
 
             # Detect P coordinates (actual bottom-left of each color box)
-            for color, hsv_range in HSV.items():
+            for color, hsv_range in HSV_analysis.items():
                 bl = detect_bottom_left(cropped, hsv_range)
                 if bl is None:
                     print(f"❌ {color} color box not found")
@@ -349,7 +351,7 @@ def main():
             debug_tilt = cropped.copy()
             
             # Detect square corners for each color and analyze tilt
-            for color, hsv_range in HSV.items():
+            for color, hsv_range in HSV_analysis.items():
                 corners = detect_square_corners(cropped, hsv_range)
                 if corners is None:
                     print(f"❌ {color} color box not found")

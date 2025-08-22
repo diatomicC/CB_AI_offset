@@ -80,8 +80,12 @@ def detect_special_color(img: np.ndarray, exclude_colors: dict) -> tuple:
                     all_boxes.append(box_info)
     
     if len(known_boxes) < 3:  # Need at least 3 out of C, M, Y
-        print("⚠️ Could not find enough C, M, Y boxes.")
-        return None, None
+        print(f"⚠️ Could not find enough C, M, Y boxes. Found: {list(known_boxes.keys())}")
+        # 에러를 반환하지 않고 찾은 것들만이라도 계속 진행
+        if len(known_boxes) == 0:
+            print("❌ No CMY boxes found at all. Cannot continue.")
+            return None, None
+        print(f"🔄 Continuing with found boxes: {list(known_boxes.keys())}")
     
     # Step 2: Calculate average size of known boxes
     known_areas = [box['area'] for box in known_boxes.values()]
@@ -101,6 +105,7 @@ def detect_special_color(img: np.ndarray, exclude_colors: dict) -> tuple:
     remaining_mask = cv2.bitwise_not(exclude_mask)
     
     # Test various color ranges to find boxes
+    # Avoid ranges that overlap with known CMY colors
     color_ranges = [
         # Red series
         ((0, 50, 50), (10, 255, 255)),
@@ -109,12 +114,13 @@ def detect_special_color(img: np.ndarray, exclude_colors: dict) -> tuple:
         ((10, 50, 50), (25, 255, 255)),
         # Green series
         ((35, 50, 50), (85, 255, 255)),
-        # Blue series
+        # Blue series - avoid overlap with Cyan
         ((100, 50, 50), (130, 255, 255)),
-        # Purple series
-        ((130, 50, 50), (170, 255, 255)),
-        # Pink series
-        ((140, 30, 50), (170, 255, 255)),
+        # Purple series - avoid overlap with Magenta (140-170)
+        ((130, 50, 50), (139, 255, 255)),  # Purple before Magenta
+        ((171, 50, 50), (180, 255, 255)),  # Purple after Magenta
+        # Pink series - more specific to avoid Magenta overlap
+        ((140, 20, 50), (170, 40, 255)),   # Very light pink only
         # Brown series
         ((10, 100, 20), (20, 255, 200)),
         # Gray series
@@ -149,15 +155,34 @@ def detect_special_color(img: np.ndarray, exclude_colors: dict) -> tuple:
                     # Calculate box center point
                     center = tuple(map(int, cv2.minEnclosingCircle(contour)[0]))
                     
-                    # Check if too close to already known boxes
+                    # Check if too close to already known boxes or overlaps with known colors
                     too_close = False
+                    
+                    # First check distance to known boxes
                     for known_box in known_boxes.values():
                         known_center = known_box['center']
                         distance = np.sqrt((center[0] - known_center[0])**2 + 
                                         (center[1] - known_center[1])**2)
                         if distance < 50:  # Too close if within 50 pixels
                             too_close = True
+                            print(f"❌ Special candidate too close to {known_box['color']} box (distance: {distance:.1f})")
                             break
+                    
+                    # Additional check: Test if this contour overlaps significantly with any known color
+                    if not too_close:
+                        contour_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+                        cv2.fillPoly(contour_mask, [contour], 255)
+                        
+                        for known_color, known_hsv_range in exclude_colors.items():
+                            known_mask = cv2.inRange(hsv, np.array(known_hsv_range[0]), np.array(known_hsv_range[1]))
+                            overlap = cv2.bitwise_and(contour_mask, known_mask)
+                            overlap_area = cv2.countNonZero(overlap)
+                            overlap_ratio = overlap_area / area
+                            
+                            if overlap_ratio > 0.3:  # More than 30% overlap
+                                too_close = True
+                                print(f"❌ Special candidate overlaps {overlap_ratio:.1%} with {known_color} color")
+                                break
                     
                     if not too_close:
                         potential_special_boxes.append({
@@ -200,6 +225,59 @@ def detect_special_color(img: np.ndarray, exclude_colors: dict) -> tuple:
         color_name = "Purple"
     
     return (hsv_lower, hsv_upper), f"Special_{color_name}"
+
+def classify_color_by_lab(img: np.ndarray, contour: np.ndarray) -> str:
+    """
+    Lab 색공간을 사용한 정확한 색상 분류
+    
+    Args:
+        img: BGR 이미지
+        contour: 색상 박스의 윤곽선
+        
+    Returns:
+        str: 분류된 색상 ('C', 'M', 'Y', 'K')
+    """
+    # ROI 마스크 생성
+    mask = np.zeros(img.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [contour], 255)
+    
+    # Lab 색공간으로 변환
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)
+    L, a, b = cv2.split(lab)
+    
+    # ROI 내부 평균 색상 계산
+    mean_L = cv2.mean(L, mask=mask)[0]
+    mean_a = cv2.mean(a, mask=mask)[0]
+    mean_b = cv2.mean(b, mask=mask)[0]
+    
+    print(f"🎨 Lab values: L={mean_L:.1f}, a={mean_a:.1f}, b={mean_b:.1f}")
+    
+    # Lab 값 기반 분류
+    # L: 밝기 (0=검정, 100=흰색)
+    # a: 빨강-초록 (음수=초록, 양수=빨강)  
+    # b: 파랑-노랑 (음수=파랑, 양수=노랑)
+    
+    if mean_L < 50:  # 어두운 색상
+        return 'S'  # Special color (검은색)
+    elif mean_a > 20 and mean_b < 10:  # 빨강 성분 높고 노랑 성분 낮음
+        return 'M'  # Magenta
+    elif mean_b > 20 and mean_a < 10:  # 노랑 성분 높고 빨강 성분 낮음
+        return 'Y'  # Yellow
+    elif mean_a < -10 and mean_b < -10:  # 초록/파랑 성분
+        return 'C'  # Cyan
+    else:
+        # 애매한 경우 RGB 기반 보조 판단
+        mean_bgr = cv2.mean(img, mask=mask)[:3]
+        b_val, g_val, r_val = mean_bgr
+        
+        if r_val > g_val and r_val > b_val:
+            return 'M'  # 빨강 계열
+        elif g_val > r_val and g_val > b_val:
+            return 'C'  # 초록/청록 계열
+        elif b_val > r_val and b_val > g_val:
+            return 'C'  # 파랑 계열
+        else:
+            return 'Y'  # 노랑 계열
 
 def extract_robust_square_marker(img: np.ndarray) -> np.ndarray | None:
     """
@@ -433,6 +511,7 @@ def calculate_adjustment_values(registration_results, cocking_results=None):
     Returns:
         dict: Adjustment values for each color
     """
+    print(f"🔍 DEBUG: registration_results keys: {list(registration_results.keys())}")
     adjustments = {}
     
     for color in ['C', 'M', 'Y', 'S']:
@@ -440,7 +519,10 @@ def calculate_adjustment_values(registration_results, cocking_results=None):
         reg_data = registration_results.get(color)
         cocking_data = cocking_results.get(color) if cocking_results else None
         
+        print(f"🔍 DEBUG: {color} - reg_data: {reg_data}")
+        
         if reg_data is None:
+            print(f"❌ DEBUG: {color} - reg_data is None")
             adjustments[color] = {
                 'LATERAL': None,
                 'CIRCUM': None,
@@ -450,7 +532,18 @@ def calculate_adjustment_values(registration_results, cocking_results=None):
             continue
             
         # Extract movement values (in mm)
+        if 'movement_mm' not in reg_data:
+            print(f"❌ DEBUG: {color} - movement_mm not found in reg_data")
+            adjustments[color] = {
+                'LATERAL': None,
+                'CIRCUM': None,
+                'COCKING': None,
+                'status': 'Missing movement data'
+            }
+            continue
+            
         dx_mm, dy_mm = reg_data['movement_mm']
+        print(f"✅ DEBUG: {color} - movement_mm: ({dx_mm}, {dy_mm})")
         
         # Convert to practical adjustment values
         # LATERAL = X-axis movement (left-right)
@@ -462,14 +555,25 @@ def calculate_adjustment_values(registration_results, cocking_results=None):
         circum_mm = dy_mm
         
         # COCKING = Y coordinate difference (right - left)
-        cocking_mm = cocking_data['cocking_mm'] if cocking_data else None
+        cocking_mm = None
+        if cocking_data and isinstance(cocking_data, dict) and 'cocking_mm' in cocking_data:
+            cocking_mm = cocking_data['cocking_mm']
+        
+        # Determine status based on available data
+        status = 'OK'
+        if cocking_mm is None:
+            status = 'Cocking data missing'
+        elif abs(cocking_mm) > 0.5:  # 0.5mm 이상이면 주의
+            status = 'Warning'
         
         adjustments[color] = {
             'LATERAL': round(lateral_mm, 3),
             'CIRCUM': round(circum_mm, 3),
             'COCKING': round(cocking_mm, 3) if cocking_mm is not None else None,
-            'status': 'OK'
+            'status': status
         }
+        
+        print(f"✅ DEBUG: {color} - Final adjustments: {adjustments[color]}")
     
     return adjustments
 
@@ -517,8 +621,8 @@ class AnalysisWorker(QThread):
             # Basic CMYK color ranges (excluding K)
             # Based on actual image analysis, these are the correct HSV ranges
             base_colors = {
-                'C': ((100,80,80),(130,255,255)),   # Blue (Cyan in printing)
-                'M': ((130,50,70),(170,255,255)),   # Magenta 
+                'C': ((90,50,50),(140,255,255)),   # Blue (Cyan in printing) - 더 넓은 범위
+                'M': ((150,80,80),(170,255,255)),   # Magenta - 더 높은 채도로 핑크색만 감지
                 'Y': ((15,60,60),(35,255,255)),     # Orange (Yellow in printing)
             }
             
@@ -526,26 +630,25 @@ class AnalysisWorker(QThread):
             self.progress.emit("Detecting special color...")
             special_hsv_range, special_color_name = detect_special_color(cropped, base_colors)
             
-            if special_hsv_range is None:
-                self.error.emit("Special color could not be detected. Please ensure the image contains a clear special color region.")
-                return
-            
-            # Complete color ranges (including special color)
+            # Complete color ranges (including special color if detected)
             HSV = base_colors.copy()
-            HSV['S'] = special_hsv_range  # Mark special color as 'S'
-            
-            # Store special color name
-            self.special_color_name = special_color_name
+            if special_hsv_range is not None:
+                HSV['S'] = special_hsv_range  # Mark special color as 'S'
+                self.special_color_name = special_color_name
+                print(f"✅ Special color detected: {special_color_name}")
+            else:
+                print("⚠️  Special color not detected. Continuing with CMY colors only.")
+                self.special_color_name = "None"
             
             # Target coordinates (bottom-left origin)
             # Each color's T point should be at the corresponding corner of its own color box
             # Based on 2x2 layout: Top-left(S), Top-right(C), Bottom-left(M), Bottom-right(Y)
-            target_coords = {
-                'S': (w_px*4/10, h_px*4/10),           # Special(Top-left box)
-                'C': (w_px*6/10, h_px*4/10),           # Blue(Top-right box) 
-                'M': (w_px*4/10, h_px*6/10),           # Magenta(Bottom-left box) 
-                'Y': (w_px*6/10, h_px*6/10)            # Yellow(Bottom-right box) 
-            }
+            target_coords = {}
+            if 'S' in HSV:
+                target_coords['S'] = (w_px*4/10, h_px*4/10)           # Special(Top-left box)
+            target_coords['C'] = (w_px*6/10, h_px*4/10)           # Blue(Top-right box) 
+            target_coords['M'] = (w_px*4/10, h_px*6/10)           # Magenta(Bottom-left box) 
+            target_coords['Y'] = (w_px*6/10, h_px*6/10)            # Yellow(Bottom-right box)
             
             self.progress.emit("Analyzing color registration...")
             
@@ -589,6 +692,7 @@ class AnalysisWorker(QThread):
                 return x, y
 
             for color, hsv_range in HSV.items():
+                print(f"🔍 DEBUG: Processing color {color} with HSV range {hsv_range}")
                 # Use corner detection to get all 4 corners
                 rect = detect_square_corners(cropped, hsv_range, min_area_ratio=0.7)
                 px_px = py_px = None
@@ -637,12 +741,17 @@ class AnalysisWorker(QThread):
                 dx_mm = dx_px * mm_per_pixel_x
                 dy_mm = dy_px * mm_per_pixel_y
                 
+                print(f"🔍 DEBUG: {color} - P({px_px:.1f}, {py_px:.1f}) -> T({tx_px:.1f}, {ty_px:.1f})")
+                print(f"🔍 DEBUG: {color} - movement_mm: ({dx_mm:.3f}, {dy_mm:.3f})")
+                
                 results_reg[color] = {
                     'P_coord_mm': (round(px_mm, 3), round(py_mm, 3)),
                     'T_coord_mm': (round(tx_mm, 3), round(ty_mm, 3)),
                     'movement_mm': (round(dx_mm, 3), round(dy_mm, 3)),
                     'P_coord_px': (px_px, py_px)  # Add pixel coordinates for cocking
                 }
+                
+                print(f"✅ DEBUG: {color} - results_reg[{color}] = {results_reg[color]}")
                 
                 # Debug visualization for registration image
                 px_int, py_int = int(round(px_px)), int(round(py_px))
@@ -659,6 +768,7 @@ class AnalysisWorker(QThread):
             cocking_results = {}
             cocking_debug_img = None
             right_results_reg = {}
+            right_cropped = None
             
             if self.right_image_path:
                 self.progress.emit("Analyzing right image for cocking calculation...")
@@ -766,10 +876,11 @@ class AnalysisWorker(QThread):
             # Calculate adjustment values (now includes cocking)
             adjustments = calculate_adjustment_values(results_reg, cocking_results)
             
-            # Create additional visualization images
-            cmyk_detection_img = self.create_cmyk_detection_image(cropped, HSV)
-            p_points_img = self.create_p_points_image(cropped, results_reg, h_px)
-            t_points_img = self.create_t_points_image(cropped, target_coords, h_px)
+            # Create additional visualization images (side-by-side if right available)
+            preprocessed_img = self.create_preprocessed_image(preprocessed, right_preprocessed)
+            cmyk_detection_img = self.create_cmyk_detection_image(cropped, right_cropped, HSV, results_reg, right_results_reg)
+            p_points_img = self.create_p_points_image(cropped, right_cropped, results_reg, right_results_reg, h_px)
+            t_points_img = self.create_t_points_image(cropped, right_cropped, target_coords, h_px)
             
             # Return results
             results = {
@@ -778,7 +889,7 @@ class AnalysisWorker(QThread):
                 'adjustments': adjustments,  # LATERAL, CIRCUM, COCKING values
                 'debug_reg': debug_reg,
                 'cocking_debug': cocking_debug_img,  # Cocking visualization
-                'preprocessed': preprocessed,  # Preprocessed image
+                'preprocessed': preprocessed_img,  # Preprocessed image (side-by-side)
                 'cmyk_detection': cmyk_detection_img,  # CMYK color boxes detected
                 'p_points': p_points_img,  # P points (actual positions)
                 't_points': t_points_img,  # T points (target positions)
@@ -795,7 +906,13 @@ class AnalysisWorker(QThread):
             self.finished.emit(results)
             
         except Exception as e:
-            self.error.emit(f"Error during analysis: {str(e)}")
+            print(f"⚠️  Analysis error: {str(e)}")
+            # 에러가 발생해도 부분적인 결과라도 보여주기
+            if 'results' in locals() and results:
+                print("🔄 Returning partial results despite error...")
+                self.finished.emit(results)
+            else:
+                self.error.emit(f"Critical error during analysis: {str(e)}")
             
     def calculate_cocking_from_results(self, left_results_reg, right_results_reg, left_cropped, right_cropped, mm_per_pixel_y):
         """
@@ -1058,111 +1175,283 @@ class AnalysisWorker(QThread):
                 return None
 
             
-    def create_cmyk_detection_image(self, cropped, HSV):
-        """Create image showing CMYK color detection results"""
-        result_img = cropped.copy()
+    def create_preprocessed_image(self, left_preprocessed, right_preprocessed):
+        """Create side-by-side preprocessed image showing square marker extraction"""
+        if left_preprocessed is None:
+            return None
+            
+        left_h, left_w = left_preprocessed.shape[:2]
+        has_right = right_preprocessed is not None
         
-        for color, hsv_range in HSV.items():
-            # Create mask for this color
-            hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(hsv, np.array(hsv_range[0]), np.array(hsv_range[1]))
+        if has_right:
+            right_h, right_w = right_preprocessed.shape[:2]
+            if (right_h, right_w) != (left_h, left_w):
+                right_preprocessed = cv2.resize(right_preprocessed, (left_w, left_h))
+        
+        # Canvas
+        gap = 40
+        label_margin = 30
+        canvas_w = left_w if not has_right else left_w * 2 + gap
+        canvas_h = left_h + label_margin
+        result_img = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        result_img.fill(50)
+        
+        # Place images
+        result_img[label_margin:label_margin+left_h, :left_w] = left_preprocessed
+        cv2.putText(result_img, "LEFT", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        
+        if has_right:
+            x_off = left_w + gap
+            result_img[label_margin:label_margin+left_h, x_off:x_off+left_w] = right_preprocessed
+            cv2.putText(result_img, "RIGHT", (x_off+10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        
+        return result_img
+    
+    def order_points_for_detection(self, pts):
+        """Sort four points in clockwise order (same as color_registration_analysis.py)"""
+        s = pts.sum(axis=1)
+        diff = np.diff(pts, axis=1)
+        rect = np.zeros((4,2), dtype="float32")
+        rect[0] = pts[np.argmin(s)]      # top-left
+        rect[2] = pts[np.argmax(s)]      # bottom-right  
+        rect[1] = pts[np.argmin(diff)]   # top-right
+        rect[3] = pts[np.argmax(diff)]   # bottom-left
+        return rect
             
-            # Find contours
-            k = cv2.getStructuringElement(cv2.MORPH_RECT, (15,15))
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+    def create_cmyk_detection_image(self, left_cropped, right_cropped, HSV, left_results=None, right_results=None):
+        """Create image showing CMYK color detection results for left and right (if available)"""
+        left_h, left_w = left_cropped.shape[:2]
+        has_right = right_cropped is not None
+        if has_right:
+            right_h, right_w = right_cropped.shape[:2]
+            if (right_h, right_w) != (left_h, left_w):
+                right_cropped = cv2.resize(right_cropped, (left_w, left_h))
+        
+        # Canvas
+        gap = 40
+        label_margin = 30
+        canvas_w = left_w if not has_right else left_w * 2 + gap
+        canvas_h = left_h + label_margin
+        result_img = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        result_img.fill(50)
+        
+        # Place images
+        result_img[label_margin:label_margin+left_h, :left_w] = left_cropped
+        cv2.putText(result_img, "LEFT", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        if has_right:
+            x_off = left_w + gap
+            result_img[label_margin:label_margin+left_h, x_off:x_off+left_w] = right_cropped
+            cv2.putText(result_img, "RIGHT", (x_off+10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        
+        color_map = {'C': (255, 0, 0), 'M': (255, 0, 255), 'Y': (0, 165, 255), 'S': (0, 255, 255)}
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (15,15))
+        
+        def draw_for(img, x_offset=0, results=None):
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            print(f"🔍 CMYK Detection called with results: {results is not None}")
+            if results:
+                print(f"🔍 Results keys: {list(results.keys())}")
             
-            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            # Filter contours - only keep large ones (main color squares)
-            if cnts:
-                # Calculate areas and find the largest one
+            # First draw contours using HSV ranges
+            detected_positions = {}
+            for color, hsv_range in HSV.items():
+                mask = cv2.inRange(hsv, np.array(hsv_range[0]), np.array(hsv_range[1]))
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+                cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if not cnts:
+                    continue
                 areas = [cv2.contourArea(c) for c in cnts]
-                max_area = max(areas) if areas else 0
-                
-                # Only keep contours that are at least 30% of the largest area
-                # This filters out small markers and keeps only main squares
+                max_area = max(areas)
                 min_area_threshold = max_area * 0.3
                 large_cnts = [c for c, area in zip(cnts, areas) if area >= min_area_threshold]
+                draw_color = color_map.get(color, (255,255,255))
+                # offset contours for canvas
+                for c in large_cnts:
+                    cv2.drawContours(result_img, [c + np.array([x_offset, label_margin])], -1, draw_color, 3)
                 
-                # Draw only the large contours
-                # Based on actual image colors for better visualization
-                color_map = {'C': (255, 0, 0), 'M': (255, 0, 255), 'Y': (0, 165, 255), 'S': (0, 255, 255)}
-                draw_color = color_map.get(color, (255, 255, 255))
-                
-                cv2.drawContours(result_img, large_cnts, -1, draw_color, 3)
-                
-                # Add color label on the largest contour only
+                # Store position and classify using Lab color space
                 if large_cnts:
                     largest_cnt = max(large_cnts, key=cv2.contourArea)
-                    M = cv2.moments(largest_cnt)
-                    if M["m00"] != 0:
-                        cx = int(M["m10"] / M["m00"])
-                        cy = int(M["m01"] / M["m00"])
-                        cv2.putText(result_img, f"{color}", (cx-10, cy), cv2.FONT_HERSHEY_SIMPLEX, 1.0, draw_color, 3)
-        
-        return result_img
-    
-    def create_p_points_image(self, cropped, results_reg, h_px):
-        """Create image showing P points (actual detected positions)"""
-        result_img = cropped.copy()
-        
-        for color, reg_data in results_reg.items():
-            if reg_data is None:
-                continue
+                    
+                    # Lab 색공간 기반 정확한 색상 분류
+                    actual_color = classify_color_by_lab(img, largest_cnt)
+                    print(f"🎨 {color} HSV detection -> Lab classification: {actual_color}")
+                    
+                    # Use same corner detection as P points
+                    hull = cv2.convexHull(largest_cnt)
+                    eps = 0.02 * cv2.arcLength(hull, True)
+                    approx = cv2.approxPolyDP(hull, eps, True).reshape(-1,2)
+                    if len(approx) == 4 and cv2.isContourConvex(approx):
+                        # Order points same as detect_square_corners
+                        rect = self.order_points_for_detection(approx)
+                        # Get specific corner for each color (same as P points logic)
+                        corner_mapping = {
+                            'S': 2,  # bottom-right (Special color)
+                            'C': 3,  # bottom-left  
+                            'M': 1,  # top-right
+                            'Y': 0,  # top-left
+                        }
+                        corner_idx = corner_mapping.get(actual_color, 3)
+                        cx = int(rect[corner_idx][0]) + x_offset
+                        cy = int(rect[corner_idx][1]) + label_margin
+                        detected_positions[actual_color] = (cx, cy)  # Use actual color as key
+                        print(f"🔍 {actual_color}: Using corner {corner_idx} at ({cx-x_offset},{cy-label_margin})")
+                    else:
+                        # Fallback to center
+                        M = cv2.moments(largest_cnt)
+                        if M["m00"] != 0:
+                            cx = int(M["m10"]/M["m00"]) + x_offset
+                            cy = int(M["m01"]/M["m00"]) + label_margin
+                            detected_positions[actual_color] = (cx, cy)  # Use actual color as key
+                            print(f"🔍 {actual_color}: Using center fallback at ({cx-x_offset},{cy-label_margin})")
+            
+            # Now label based on actual detection results if available
+            if results:
+                # Ignore HSV detection completely, use only actual analysis results
+                print(f"🔍 CMYK Detection Debug - Image offset: {x_offset}")
+                print(f"🔍 Available results: {list(results.keys())}")
                 
-            # Get P coordinate
-            px_mm, py_mm = reg_data['P_coord_mm']
-            
-            # Convert back to pixel coordinates
-            mm_per_pixel_x = 5.0 / cropped.shape[1]
-            mm_per_pixel_y = 5.0 / cropped.shape[0]
-            
-            px_bl = px_mm / mm_per_pixel_x
-            py_bl = py_mm / mm_per_pixel_y
-            
-            # Convert to OpenCV coordinates
-            px_cv = int(px_bl)
-            py_cv = int(h_px - py_bl)
-            
-            # Draw P point
-            color_map = {'C': (255, 255, 0), 'M': (255, 0, 255), 'Y': (0, 255, 255), 'S': (255, 255, 255)}
-            draw_color = color_map.get(color, (255, 255, 255))
-            
-            cv2.circle(result_img, (px_cv, py_cv), 12, draw_color, -1)
-            cv2.circle(result_img, (px_cv, py_cv), 15, (0, 0, 0), 3)
-            cv2.putText(result_img, f"P{color}", (px_cv+20, py_cv), cv2.FONT_HERSHEY_SIMPLEX, 0.8, draw_color, 2)
-            cv2.putText(result_img, f"({px_mm:.2f},{py_mm:.2f})", (px_cv+20, py_cv+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                # Get image dimensions
+                img_h, img_w = img.shape[:2]
+                mm_per_pixel_x = 5.0 / img_w
+                mm_per_pixel_y = 5.0 / img_h
+                
+                # Draw labels directly at actual P point positions (ignore HSV detection)
+                for actual_color, reg_data in results.items():
+                    if not reg_data:
+                        continue
+                    
+                    # Get actual detected position from analysis results
+                    # Try different data structure keys
+                    px_px = py_px = None
+                    if 'P_coord_px' in reg_data:
+                        px_px, py_px = reg_data['P_coord_px']
+                    elif 'bottom_left_px' in reg_data:
+                        px_px, py_px = reg_data['bottom_left_px']
+                    else:
+                        print(f"❌ {actual_color}: No pixel coordinates found in {list(reg_data.keys())}")
+                        continue
+                    
+                    # Convert to canvas coordinates
+                    px_cv = int(px_px) + x_offset
+                    py_cv = int(py_px) + label_margin
+                    
+                    print(f"🔍 {actual_color}: coords=({px_px:.1f},{py_px:.1f}) -> canvas=({px_cv},{py_cv})")
+                    
+                    # Draw label directly at actual position
+                    draw_color = color_map.get(actual_color, (255,255,255))
+                    cv2.putText(result_img, f"{actual_color}", (px_cv-10, py_cv), cv2.FONT_HERSHEY_SIMPLEX, 1.0, draw_color, 3)
+                    print(f"    ✅ Drawing {actual_color} label at ({px_cv},{py_cv})")
+                        
+                print(f"🔍 Used actual P point positions for labeling")
+                
+                # Clear detected_positions to avoid double labeling
+                detected_positions.clear()
+            else:
+                # Fallback to Lab-based classification labeling
+                print(f"🔍 Using Lab-based classification for labeling")
+                for color, (cx, cy) in detected_positions.items():
+                    # Use the Lab-classified color directly
+                    draw_color = color_map.get(color, (255,255,255))
+                    cv2.putText(result_img, f"{color}", (cx-10, cy), cv2.FONT_HERSHEY_SIMPLEX, 1.0, draw_color, 3)
+                    print(f"    ✅ Drawing Lab-classified {color} label at ({cx},{cy})")
+        
+        draw_for(left_cropped, 0, left_results)
+        if has_right:
+            draw_for(right_cropped, left_w + gap, right_results)
         
         return result_img
     
-    def create_t_points_image(self, cropped, target_coords, h_px):
-        """Create image showing T points (target positions)"""
-        result_img = cropped.copy()
+    def create_p_points_image(self, left_cropped, right_cropped, left_results_reg, right_results_reg, h_px):
+        """Create image showing P points for left and right (if available)"""
+        left_h, left_w = left_cropped.shape[:2]
+        has_right = right_cropped is not None and bool(right_results_reg)
+        if has_right:
+            right_h, right_w = right_cropped.shape[:2]
+            if (right_h, right_w) != (left_h, left_w):
+                right_cropped = cv2.resize(right_cropped, (left_w, left_h))
+        gap = 40
+        label_margin = 30
+        canvas_w = left_w if not has_right else left_w*2 + gap
+        canvas_h = left_h + label_margin
+        result_img = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        result_img.fill(50)
+        result_img[label_margin:label_margin+left_h, :left_w] = left_cropped
+        cv2.putText(result_img, "LEFT", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        if has_right:
+            x_off = left_w + gap
+            result_img[label_margin:label_margin+left_h, x_off:x_off+left_w] = right_cropped
+            cv2.putText(result_img, "RIGHT", (x_off+10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
         
-        for color, (tx_px, ty_px) in target_coords.items():
-            tx_bl, ty_bl = pixel_to_bottom_left_coord(tx_px, ty_px, h_px)
-            tx_cv = int(tx_bl)
-            ty_cv = int(h_px - ty_bl)
-            
-            # Draw T point
-            color_map = {'C': (255, 255, 0), 'M': (255, 0, 255), 'Y': (0, 255, 255), 'S': (255, 255, 255)}
-            draw_color = color_map.get(color, (255, 255, 255))
-            
-            # Draw X mark
-            cv2.line(result_img, (tx_cv-15, ty_cv-15), (tx_cv+15, ty_cv+15), draw_color, 4)
-            cv2.line(result_img, (tx_cv-15, ty_cv+15), (tx_cv+15, ty_cv-15), draw_color, 4)
-            cv2.line(result_img, (tx_cv-15, ty_cv-15), (tx_cv+15, ty_cv+15), (0, 0, 0), 2)
-            cv2.line(result_img, (tx_cv-15, ty_cv+15), (tx_cv+15, ty_cv-15), (0, 0, 0), 2)
-            
-            cv2.putText(result_img, f"T{color}", (tx_cv+20, ty_cv), cv2.FONT_HERSHEY_SIMPLEX, 0.8, draw_color, 2)
-            
-            # Convert to mm for display
-            mm_per_pixel_x = 5.0 / cropped.shape[1]
-            mm_per_pixel_y = 5.0 / cropped.shape[0]
-            tx_mm = tx_bl * mm_per_pixel_x
-            ty_mm = ty_bl * mm_per_pixel_y
-            cv2.putText(result_img, f"({tx_mm:.2f},{ty_mm:.2f})", (tx_cv+20, ty_cv+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        def draw_points(results, mm_w, mm_h, x_off=0):
+            for color, reg_data in results.items():
+                if not reg_data:
+                    continue
+                px_mm, py_mm = reg_data['P_coord_mm']
+                px_bl = px_mm / mm_w
+                py_bl = py_mm / mm_h
+                px_cv = int(px_bl) + x_off
+                py_cv = int(h_px - py_bl)
+                color_map = {'C': (255, 255, 0), 'M': (255, 0, 255), 'Y': (0, 255, 255), 'S': (255, 255, 255)}
+                draw_color = color_map.get(color, (255,255,255))
+                cv2.circle(result_img, (px_cv, py_cv+label_margin), 12, draw_color, -1)
+                cv2.circle(result_img, (px_cv, py_cv+label_margin), 15, (0,0,0), 3)
+                cv2.putText(result_img, f"P{color}", (px_cv+20, py_cv+label_margin), cv2.FONT_HERSHEY_SIMPLEX, 0.8, draw_color, 2)
+                cv2.putText(result_img, f"({px_mm:.2f},{py_mm:.2f})", (px_cv+20, py_cv+label_margin+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+        
+        mm_per_pixel_x_left = 5.0 / left_cropped.shape[1]
+        mm_per_pixel_y_left = 5.0 / left_cropped.shape[0]
+        draw_points(left_results_reg, mm_per_pixel_x_left, mm_per_pixel_y_left, 0)
+        if has_right:
+            mm_per_pixel_x_right = 5.0 / right_cropped.shape[1]
+            mm_per_pixel_y_right = 5.0 / right_cropped.shape[0]
+            draw_points(right_results_reg, mm_per_pixel_x_right, mm_per_pixel_y_right, left_w + gap)
+        
+        return result_img
+    
+    def create_t_points_image(self, left_cropped, right_cropped, target_coords, h_px):
+        """Create image showing T points side-by-side if right available"""
+        left_h, left_w = left_cropped.shape[:2]
+        has_right = right_cropped is not None
+        if has_right:
+            right_h, right_w = right_cropped.shape[:2]
+            if (right_h, right_w) != (left_h, left_w):
+                right_cropped = cv2.resize(right_cropped, (left_w, left_h))
+        gap = 40
+        label_margin = 30
+        canvas_w = left_w if not has_right else left_w*2 + gap
+        canvas_h = left_h + label_margin
+        result_img = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        result_img.fill(50)
+        result_img[label_margin:label_margin+left_h, :left_w] = left_cropped
+        cv2.putText(result_img, "LEFT", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        if has_right:
+            x_off = left_w + gap
+            result_img[label_margin:label_margin+left_h, x_off:x_off+left_w] = right_cropped
+            cv2.putText(result_img, "RIGHT", (x_off+10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        
+        def draw_targets(w, img_w, x_off=0):
+            for color, (tx_px, ty_px) in target_coords.items():
+                tx_bl, ty_bl = pixel_to_bottom_left_coord(tx_px, ty_px, h_px)
+                tx_cv = int(tx_bl) + x_off
+                ty_cv = int(h_px - ty_bl) + label_margin
+                color_map = {'C': (255, 255, 0), 'M': (255, 0, 255), 'Y': (0, 255, 255), 'S': (255, 255, 255)}
+                draw_color = color_map.get(color, (255,255,255))
+                cv2.line(result_img, (tx_cv-15, ty_cv-15), (tx_cv+15, ty_cv+15), draw_color, 4)
+                cv2.line(result_img, (tx_cv-15, ty_cv+15), (tx_cv+15, ty_cv-15), draw_color, 4)
+                cv2.line(result_img, (tx_cv-15, ty_cv-15), (tx_cv+15, ty_cv+15), (0,0,0), 2)
+                cv2.line(result_img, (tx_cv-15, ty_cv+15), (tx_cv+15, ty_cv-15), (0,0,0), 2)
+                mm_per_pixel_x = 5.0 / img_w
+                mm_per_pixel_y = 5.0 / left_h
+                tx_mm = tx_bl * mm_per_pixel_x
+                ty_mm = ty_bl * mm_per_pixel_y
+                cv2.putText(result_img, f"T{color}", (tx_cv+20, ty_cv), cv2.FONT_HERSHEY_SIMPLEX, 0.8, draw_color, 2)
+                cv2.putText(result_img, f"({tx_mm:.2f},{ty_mm:.2f})", (tx_cv+20, ty_cv+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+        
+        draw_targets(left_w, left_w, 0)
+        if has_right:
+            draw_targets(left_w, left_w, left_w + gap)
         
         return result_img
 
@@ -1940,58 +2229,49 @@ class CMYKAnalyzerGUI(QMainWindow):
         for row, color in enumerate(colors):
             adj = adjustments.get(color, {})
             
-            if adj.get('status') == 'OK':
-                # LATERAL
-                lateral_item = QTableWidgetItem(f"{adj['LATERAL']:+.3f}" if adj['LATERAL'] is not None else "N/A")
-                lateral_item.setTextAlignment(Qt.AlignCenter)
-                if adj['LATERAL'] is not None:
-                    if adj['LATERAL'] > 0:
-                        lateral_item.setBackground(QColor(255, 235, 235))  # Light red for positive
-                    else:
-                        lateral_item.setBackground(QColor(235, 255, 235))  # Light green for negative
-                
-                # CIRCUM  
-                circum_item = QTableWidgetItem(f"{adj['CIRCUM']:+.3f}" if adj['CIRCUM'] is not None else "N/A")
-                circum_item.setTextAlignment(Qt.AlignCenter)
-                if adj['CIRCUM'] is not None:
-                    if adj['CIRCUM'] > 0:
-                        circum_item.setBackground(QColor(255, 235, 235))  # Light red for positive
-                    else:
-                        circum_item.setBackground(QColor(235, 255, 235))  # Light green for negative
-                
-                # COCKING
-                cocking_item = QTableWidgetItem(f"{adj['COCKING']:+.3f}" if adj['COCKING'] is not None else "N/A")
-                cocking_item.setTextAlignment(Qt.AlignCenter)
-                if adj['COCKING'] is not None:
-                    if adj['COCKING'] > 0:
-                        cocking_item.setBackground(QColor(255, 235, 235))  # Light red for positive
-                    else:
-                        cocking_item.setBackground(QColor(235, 255, 235))  # Light green for negative
-                
-                # Status
+            # LATERAL - status와 관계없이 값이 있으면 표시
+            lateral_item = QTableWidgetItem(f"{adj['LATERAL']:+.3f}" if adj.get('LATERAL') is not None else "N/A")
+            lateral_item.setTextAlignment(Qt.AlignCenter)
+            if adj.get('LATERAL') is not None:
+                if adj['LATERAL'] > 0:
+                    lateral_item.setBackground(QColor(255, 235, 235))  # Light red for positive
+                else:
+                    lateral_item.setBackground(QColor(235, 255, 235))  # Light green for negative
+            
+            # CIRCUM - status와 관계없이 값이 있으면 표시
+            circum_item = QTableWidgetItem(f"{adj['CIRCUM']:+.3f}" if adj.get('CIRCUM') is not None else "N/A")
+            circum_item.setTextAlignment(Qt.AlignCenter)
+            if adj.get('CIRCUM') is not None:
+                if adj['CIRCUM'] > 0:
+                    circum_item.setBackground(QColor(255, 235, 235))  # Light red for positive
+                else:
+                    circum_item.setBackground(QColor(235, 255, 235))  # Light green for negative
+            
+            # COCKING - status와 관계없이 값이 있으면 표시
+            cocking_item = QTableWidgetItem(f"{adj['COCKING']:+.3f}" if adj.get('COCKING') is not None else "N/A")
+            cocking_item.setTextAlignment(Qt.AlignCenter)
+            if adj.get('COCKING') is not None:
+                if adj['COCKING'] > 0:
+                    cocking_item.setBackground(QColor(255, 235, 235))  # Light red for positive
+                else:
+                    cocking_item.setBackground(QColor(235, 255, 235))  # Light green for negative
+            
+            # Status - 실제 status 값 표시
+            status_text = adj.get('status', 'Unknown')
+            if status_text == 'OK':
                 status_item = QTableWidgetItem("✅ OK")
-                status_item.setTextAlignment(Qt.AlignCenter)
                 status_item.setBackground(QColor(235, 255, 235))  # Light green
-                
+            elif status_text == 'Cocking data missing':
+                status_item = QTableWidgetItem("⚠️ Cocking Missing")
+                status_item.setBackground(QColor(255, 255, 200))  # Light yellow
+            elif status_text == 'Warning':
+                status_item = QTableWidgetItem("⚠️ Warning")
+                status_item.setBackground(QColor(255, 235, 200))  # Light orange
             else:
-                # Failed detection
-                lateral_item = QTableWidgetItem("N/A")
-                circum_item = QTableWidgetItem("N/A") 
-                cocking_item = QTableWidgetItem("N/A")
-                status_item = QTableWidgetItem("❌ Failed")
-                
-                # Set gray background for failed items
-                gray_color = QColor(240, 240, 240)
-                lateral_item.setBackground(gray_color)
-                circum_item.setBackground(gray_color)
-                cocking_item.setBackground(gray_color)
+                status_item = QTableWidgetItem(f"❌ {status_text}")
                 status_item.setBackground(QColor(255, 220, 220))  # Light red
-                
-                # Center align
-                lateral_item.setTextAlignment(Qt.AlignCenter)
-                circum_item.setTextAlignment(Qt.AlignCenter)
-                cocking_item.setTextAlignment(Qt.AlignCenter)
-                status_item.setTextAlignment(Qt.AlignCenter)
+            
+            status_item.setTextAlignment(Qt.AlignCenter)
             
             # Set items in table
             self.adjustment_table.setItem(row, 0, lateral_item)
