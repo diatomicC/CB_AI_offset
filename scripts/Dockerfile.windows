@@ -1,0 +1,44 @@
+# Windows 빌드를 위한 Docker 이미지
+FROM python:3.9-slim
+
+# 작업 디렉토리 설정
+WORKDIR /workspace
+
+# 시스템 패키지 업데이트 및 필요한 도구 설치
+RUN apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 의존성 설치
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# PyInstaller 설치
+RUN pip install --no-cache-dir pyinstaller
+
+# Wine 설치 (Windows 실행파일 생성을 위해)
+RUN dpkg --add-architecture i386 && \
+    apt-get update && \
+    apt-get install -y wine wine32 wine64 && \
+    rm -rf /var/lib/apt/lists/*
+
+# 작업 디렉토리로 소스 코드 복사
+COPY . .
+
+# 빌드 스크립트 생성
+RUN echo '#!/bin/bash\n\
+echo "🔨 Windows 빌드를 시작합니다..."\n\
+echo "📦 의존성 확인 중..."\n\
+pip list | grep -E "(PySide6|opencv|numpy|pandas)"\n\
+echo "🚀 PyInstaller로 빌드 중..."\n\
+pyinstaller --onefile --windowed --icon=app_icon.ico --name=CMYK_Analyzer run_gui.py\n\
+echo "✅ 빌드 완료!"\n\
+ls -la dist/\n\
+echo "📁 dist/ 디렉토리의 내용:"\n\
+ls -la dist/\n\
+' > /workspace/build_windows.sh && chmod +x /workspace/build_windows.sh
+
+# 기본 명령어 설정
+CMD ["/bin/bash", "/workspace/build_windows.sh"]

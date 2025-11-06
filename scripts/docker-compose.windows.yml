@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  windows-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile.windows
+    volumes:
+      - ./dist:/workspace/dist
+      - ./build:/workspace/build
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: /bin/bash -c "
+      echo '🔨 Windows 빌드를 시작합니다...' &&
+      echo '📦 의존성 확인 중...' &&
+      pip list | grep -E '(PySide6|opencv|numpy|pandas)' &&
+      echo '🚀 PyInstaller로 빌드 중...' &&
+      pyinstaller --onefile --windowed --icon=app_icon.ico --name=CMYK_Analyzer run_gui.py &&
+      echo '✅ 빌드 완료!' &&
+      ls -la dist/ &&
+      echo '📁 dist/ 디렉토리의 내용:' &&
+      ls -la dist/ &&
+      echo '🎉 Windows 빌드가 성공적으로 완료되었습니다!'
+    "
