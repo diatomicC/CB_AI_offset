@@ -35,7 +35,7 @@ class CMYKAnalyzerGUI(QMainWindow):
         self.init_ui()
         
     def init_ui(self):
-        self.setWindowTitle("CMYK Registration Analyzer")
+        self.setWindowTitle("Registration Analyzer (K-frame, position-based)")
         self.setGeometry(100, 100, 1400, 900)
         
         central_widget = QWidget()
@@ -166,8 +166,14 @@ class CMYKAnalyzerGUI(QMainWindow):
         self.adjustment_table.setColumnCount(4)  # LATERAL, CIRCUM, COCKING, Status
         self.adjustment_table.setHorizontalHeaderLabels(['LATERAL (mm)', 'CIRCUM (mm)', 'COCKING (mm)', 'Status'])
         
-        colors = ['C (Cyan)', 'M (Magenta)', 'Y (Yellow)', 'K (Frame)', 'S (Special)']
-        self.adjustment_table.setVerticalHeaderLabels(colors)
+        row_labels = [
+            'Upper Left',
+            'Upper Right',
+            'Lower Left',
+            'Lower Right',
+            'K (Frame)',
+        ]
+        self.adjustment_table.setVerticalHeaderLabels(row_labels)
         
         self.adjustment_table.setStyleSheet("""
             QTableWidget {
@@ -236,10 +242,10 @@ TIP: Make small adjustments and re-analyze for best results.
         image_btn_layout = QGridLayout()
         self.show_preprocessed_btn = QPushButton("1. Preprocessed")
         self.show_preprocessed_btn.clicked.connect(lambda: self.show_debug_image('preprocessed'))
-        self.show_cmyk_btn = QPushButton("2. CMYK Detection")
+        self.show_cmyk_btn = QPushButton("2. Face detection")
         self.show_cmyk_btn.clicked.connect(lambda: self.show_debug_image('cmyk_detection'))
-        self.show_p_points_btn = QPushButton("3. P Points")
-        self.show_p_points_btn.clicked.connect(lambda: self.show_debug_image('p_points'))
+        self.show_pivot_btn = QPushButton("3. Pivot")
+        self.show_pivot_btn.clicked.connect(lambda: self.show_debug_image('pivot'))
         self.show_t_points_btn = QPushButton("4. T Points")
         self.show_t_points_btn.clicked.connect(lambda: self.show_debug_image('t_points'))
         self.show_cocking_btn = QPushButton("5. Cocking")
@@ -248,7 +254,7 @@ TIP: Make small adjustments and re-analyze for best results.
         self.show_adjusted_btn.clicked.connect(lambda: self.show_debug_image('after_adjustment'))
         image_btn_layout.addWidget(self.show_preprocessed_btn, 0, 0)
         image_btn_layout.addWidget(self.show_cmyk_btn, 0, 1)
-        image_btn_layout.addWidget(self.show_p_points_btn, 0, 2)
+        image_btn_layout.addWidget(self.show_pivot_btn, 0, 2)
         image_btn_layout.addWidget(self.show_t_points_btn, 1, 0)
         image_btn_layout.addWidget(self.show_cocking_btn, 1, 1)
         image_btn_layout.addWidget(self.show_adjusted_btn, 1, 2)
@@ -406,8 +412,6 @@ TIP: Make small adjustments and re-analyze for best results.
     
     def populate_adjustment_table(self, adjustments):
         """Populate the adjustment table with results"""
-        colors = ['C', 'M', 'Y', 'S']
-        
         # Extract strategy info if available
         strategy_info = adjustments.pop('_strategy_info', None)
         if strategy_info:
@@ -435,10 +439,9 @@ TIP: Make small adjustments and re-analyze for best results.
         # Clear existing items first
         self.adjustment_table.clearContents()
         
-        # Process colors in order: C, M, Y, K, S
-        color_order = ['C', 'M', 'Y', 'K', 'S']
-        for row, color in enumerate(color_order):
-            adj = adjustments.get(color, {})
+        row_order = ['upper_left', 'upper_right', 'lower_left', 'lower_right', 'K']
+        for row, key in enumerate(row_order):
+            adj = adjustments.get(key, {})
             
             # LATERAL
             lateral_val = adj.get('LATERAL')
@@ -526,8 +529,8 @@ TIP: Make small adjustments and re-analyze for best results.
             debug_img = self.analysis_results.get('preprocessed')
         elif image_type == 'cmyk_detection':
             debug_img = self.analysis_results.get('cmyk_detection')
-        elif image_type == 'p_points':
-            debug_img = self.analysis_results.get('p_points')
+        elif image_type == 'pivot':
+            debug_img = self.analysis_results.get('pivot')
         elif image_type == 't_points':
             debug_img = self.analysis_results.get('t_points')
         elif image_type == 'cocking':
@@ -566,7 +569,7 @@ TIP: Make small adjustments and re-analyze for best results.
             try:
                 json_results = {}
                 for key, value in self.analysis_results.items():
-                    if key in ['debug_reg', 'cocking_debug', 'preprocessed', 'cmyk_detection', 'p_points', 't_points']:
+                    if key in ['debug_reg', 'cocking_debug', 'preprocessed', 'cmyk_detection', 'pivot', 't_points']:
                         continue
                     json_results[key] = value
                 with open(file_path, 'w', encoding='utf-8') as f:
@@ -595,4 +598,3 @@ TIP: Make small adjustments and re-analyze for best results.
         if hasattr(self, 'camera_widget'):
             self.camera_widget.stop_camera()
         event.accept()
-

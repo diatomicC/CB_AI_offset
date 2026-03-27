@@ -12,43 +12,8 @@ from color_registration_analysis import (
     pixel_to_bottom_left_coord, order_points
 )
 
-
-def detect_k_frame_box(img: np.ndarray) -> np.ndarray | None:
-    """
-    Detect K frame box (black square frame) without cropping.
-    Returns the 4 corner points of the frame.
-    
-    Args:
-        img: Input image (BGR)
-        
-    Returns:
-        np.ndarray | None: 4 corner points [top-left, top-right, bottom-right, bottom-left], or None
-    """
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, bin_ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    cnts, _ = cv2.findContours(255 - bin_, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    cands = []
-    for c in cnts:
-        a = cv2.contourArea(c)
-        if a < 5000:  # Minimum area threshold
-            continue
-        eps = 0.03 * cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, eps, True)
-        if len(approx) == 4 and cv2.isContourConvex(approx):
-            pts = approx.reshape(4, 2)
-            w = np.linalg.norm(pts[0] - pts[1])
-            h = np.linalg.norm(pts[1] - pts[2])
-            if abs(1 - w/h) < 0.3:  # Approximate square
-                cands.append((a, pts))
-    
-    if not cands:
-        return None
-    
-    # Select the largest square candidate (K frame)
-    _, best = max(cands, key=lambda x: x[0])
-    rect = order_points(best)
-    return rect  # Return corners without cropping
+from .k_frame_detector import detect_k_frame_box
+from .k_frame_face_detection import FACE_POSITION_KEYS
 
 
 def detect_special_color(img: np.ndarray, exclude_colors: dict) -> tuple:
@@ -540,7 +505,7 @@ def analyze_global_shift_pattern(registration_results):
     actual_positions = []  # Actual positions of color boxes
     target_positions = []  # Target positions of color boxes
     
-    for color in ['C', 'M', 'Y', 'S']:
+    for color in FACE_POSITION_KEYS:
         reg_data = registration_results.get(color)
         if reg_data and 'movement_mm' in reg_data:
             dx_mm, dy_mm = reg_data['movement_mm']
@@ -548,8 +513,8 @@ def analyze_global_shift_pattern(registration_results):
             valid_colors.append(color)
             
             # Get actual and target positions
-            if 'P_coord_mm' in reg_data and 'T_coord_mm' in reg_data:
-                actual_positions.append(reg_data['P_coord_mm'])
+            if 'pivot_coord_mm' in reg_data and 'T_coord_mm' in reg_data:
+                actual_positions.append(reg_data['pivot_coord_mm'])
                 target_positions.append(reg_data['T_coord_mm'])
     
     if len(movements) < 2:
@@ -630,12 +595,12 @@ def find_optimal_common_shift(registration_results):
     actual_positions = []
     target_positions = []
     
-    for color in ['C', 'M', 'Y', 'S']:
+    for color in FACE_POSITION_KEYS:
         reg_data = registration_results.get(color)
         if reg_data and 'movement_mm' in reg_data:
             movements[color] = reg_data['movement_mm']
-            if 'P_coord_mm' in reg_data and 'T_coord_mm' in reg_data:
-                actual_positions.append(reg_data['P_coord_mm'])
+            if 'pivot_coord_mm' in reg_data and 'T_coord_mm' in reg_data:
+                actual_positions.append(reg_data['pivot_coord_mm'])
                 target_positions.append(reg_data['T_coord_mm'])
     
     if len(movements) < 2:
@@ -714,7 +679,7 @@ def calculate_strategy_cost(registration_results, strategy_type, common_shift=No
         total_cost = abs(dx) + abs(dy)  # K frame movement cost (moves entire frame)
         
         # Add residual costs for fine-tuning (individual color adjustments after frame shift)
-        for color in ['C', 'M', 'Y', 'S']:
+        for color in FACE_POSITION_KEYS:
             reg_data = registration_results.get(color)
             if reg_data and 'movement_mm' in reg_data:
                 color_dx, color_dy = reg_data['movement_mm']
@@ -728,7 +693,7 @@ def calculate_strategy_cost(registration_results, strategy_type, common_shift=No
         # Individual strategy: each color moves to its target (including K/S)
         # Cost = sum of |movement| for each color
         total_cost = 0.0
-        for color in ['C', 'M', 'Y', 'S']:
+        for color in FACE_POSITION_KEYS:
             reg_data = registration_results.get(color)
             if reg_data and 'movement_mm' in reg_data:
                 dx, dy = reg_data['movement_mm']
@@ -816,7 +781,7 @@ def calculate_adjustment_values(registration_results, cocking_results=None):
             'is_frame': True
         }
     
-    for color in ['C', 'M', 'Y', 'S']:
+    for color in FACE_POSITION_KEYS:
         reg_data = registration_results.get(color)
         cocking_data = cocking_results.get(color) if cocking_results else None
         

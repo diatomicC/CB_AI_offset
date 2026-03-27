@@ -10,14 +10,35 @@ import numpy as np
 from datetime import datetime
 from PySide6.QtCore import QThread, Signal
 
-from color_registration_analysis import (
-    detect_bottom_left, detect_square_corners,
-    pixel_to_bottom_left_coord
+from color_registration_analysis import pixel_to_bottom_left_coord
+from gui.analysis_functions import calculate_adjustment_values, detect_k_frame_box
+from gui.k_frame_face_detection import (
+    FACE_POSITION_KEYS,
+    assign_face_boxes_to_positions,
+    detect_color_faces_in_warp,
+    pivot_point_from_face_quad,
 )
-from gui.analysis_functions import (
-    detect_special_color, classify_color_by_lab, extract_robust_square_marker,
-    calculate_adjustment_values, detect_k_frame_box
-)
+
+K_FRAME_NORMALIZED_SIZE = 512
+
+
+def _crop_to_k_frame(img: np.ndarray, corners: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Perspective-warp image to the detected K-frame square.
+    Returns:
+        (warped_image, warped_k_corners_in_image_coords)
+    """
+    pts = corners.astype(np.float32)
+    side = int(K_FRAME_NORMALIZED_SIZE)
+
+    dst = np.array(
+        [[0, 0], [side - 1, 0], [side - 1, side - 1], [0, side - 1]],
+        dtype=np.float32,
+    )
+    M = cv2.getPerspectiveTransform(pts, dst)
+    warped = cv2.warpPerspective(img, M, (side, side))
+    warped_corners = dst.copy()
+    return warped, warped_corners
 
 
 class AnalysisWorker(QThread):
@@ -30,7 +51,7 @@ class AnalysisWorker(QThread):
         super().__init__()
         self.left_image_path = left_image_path
         self.right_image_path = right_image_path
-        self.special_color_name = "None"
+        self.special_color_name = "N/A (position-based faces)"
     
     def run(self):
         try:
@@ -42,21 +63,19 @@ class AnalysisWorker(QThread):
                 self.error.emit("Cannot read left image file.")
                 return
                 
-            self.progress.emit("Preprocessing square marker...")
+            self.progress.emit("Preparing image for K-frame detection...")
             
-            # Step 1: Square marker preprocessing
-            preprocessed = extract_robust_square_marker(left_orig)
-            if preprocessed is None:
-                self.error.emit("Cannot find square marker. Please ensure the image contains a clear square region.")
-                return
+            # Step 1: Use full original image for detection
+            preprocessed = left_orig.copy()
                 
             self.progress.emit("Detecting K frame box...")
             
-            # Step 2: Detect K frame box (without cropping)
+            # Step 2: Detect K frame box, then crop/warp to K-frame
             k_frame_corners = detect_k_frame_box(preprocessed)
             if k_frame_corners is None:
                 self.error.emit("Cannot find K frame box.")
                 return
+            preprocessed, k_frame_corners = _crop_to_k_frame(preprocessed, k_frame_corners)
             
             # Calculate K frame center and size
             k_frame_center = np.mean(k_frame_corners, axis=0)
@@ -69,195 +88,122 @@ class AnalysisWorker(QThread):
             mm_per_pixel_y = 5.0 / k_frame_size
             
             h_px, w_px = preprocessed.shape[:2]
-            
-            # Basic CMYK color ranges (excluding K)
-            base_colors = {
-                'C': ((90,50,50),(140,255,255)),   # Blue (Cyan in printing)
-                'M': ((150,80,80),(170,255,255)),   # Magenta
-                'Y': ((15,60,60),(35,255,255)),     # Orange (Yellow in printing)
-            }
-            
-            # Detect special color (use preprocessed image directly)
-            self.progress.emit("Detecting special color...")
-            special_hsv_range, special_color_name = detect_special_color(preprocessed, base_colors)
-            
-            # Complete color ranges (including special color if detected)
-            HSV = base_colors.copy()
-            if special_hsv_range is not None:
-                HSV['S'] = special_hsv_range
-                self.special_color_name = special_color_name
-                print(f"Special color detected: {special_color_name}")
-            else:
-                print("Special color not detected. Continuing with CMY colors only.")
-                self.special_color_name = "None"
-            
-            # Target coordinates relative to K frame center
-            # Based on 2x2 layout: Top-left(S), Top-right(C), Bottom-left(M), Bottom-right(Y)
-            # Target positions are relative to K frame center
+
             k_center_x, k_center_y = k_frame_center[0], k_frame_center[1]
             k_half_size = k_frame_size / 2
-            target_coords = {}
-            if 'S' in HSV:
-                target_coords['S'] = (k_center_x - k_half_size * 0.2, k_center_y - k_half_size * 0.2)  # Top-left
-            target_coords['C'] = (k_center_x + k_half_size * 0.2, k_center_y - k_half_size * 0.2)     # Top-right
-            target_coords['M'] = (k_center_x - k_half_size * 0.2, k_center_y + k_half_size * 0.2)     # Bottom-left
-            target_coords['Y'] = (k_center_x + k_half_size * 0.2, k_center_y + k_half_size * 0.2)     # Bottom-right
-            
-            self.progress.emit("Analyzing color registration...")
-            
-            # Color registration analysis
-            results_reg = {}
-            debug_reg = preprocessed.copy()
-            
-            # Mark target points with red X
-            for color, (tx_px, ty_px) in target_coords.items():
-                tx_cv = int(tx_px)
-                ty_cv = int(ty_px)
-                
-                cv2.line(debug_reg, (tx_cv-10, ty_cv-10), (tx_cv+10, ty_cv+10), (0,0,255), 2)
-                cv2.line(debug_reg, (tx_cv-10, ty_cv+10), (tx_cv+10, ty_cv-10), (0,0,255), 2)
-                cv2.putText(debug_reg, f"T{color}", (tx_cv+12, ty_cv), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
-            
-            # Helper functions for robust P point selection
-            def _is_inside(x: float, y: float, w: int, h: int, margin: int = 0) -> bool:
-                return margin <= x < (w - margin) and margin <= y < (h - margin)
-            
+            target_coords = {
+                "upper_left": (k_center_x - k_half_size * 0.2, k_center_y - k_half_size * 0.2),
+                "upper_right": (k_center_x + k_half_size * 0.2, k_center_y - k_half_size * 0.2),
+                "lower_left": (k_center_x - k_half_size * 0.2, k_center_y + k_half_size * 0.2),
+                "lower_right": (k_center_x + k_half_size * 0.2, k_center_y + k_half_size * 0.2),
+            }
+
+            self.progress.emit("Detecting colored faces in K-frame...")
+            faces = detect_color_faces_in_warp(preprocessed)
+            pos_to_box = assign_face_boxes_to_positions(faces, w_px, h_px)
+
+            self.progress.emit("Analyzing registration (position-based)...")
+
             def _is_inside_k_frame(x: float, y: float, k_corners: np.ndarray) -> bool:
-                """Check if point is inside K frame box"""
-                # Use point-in-polygon test
                 k_corners_int = k_corners.astype(np.int32)
                 result = cv2.pointPolygonTest(k_corners_int, (float(x), float(y)), False)
                 return result >= 0
 
-            def _get_corner_index_for_color(color_name: str) -> int:
-                # rect order: [top-left(0), top-right(1), bottom-right(2), bottom-left(3)]
-                mapping = {
-                    'S': 2,  # bottom-right
-                    'C': 3,  # bottom-left
-                    'M': 1,  # top-right
-                    'Y': 0,  # top-left
-                }
-                return mapping.get(color_name, 3)
+            _POS_TAG = {
+                "upper_left": "UL",
+                "upper_right": "UR",
+                "lower_left": "LL",
+                "lower_right": "LR",
+            }
 
-            def _safe_point_towards_center(corners: np.ndarray, corner_idx: int, fraction: float = 0.2) -> tuple[float, float]:
-                cx = float(np.mean(corners[:, 0]))
-                cy = float(np.mean(corners[:, 1]))
-                x0 = float(corners[corner_idx][0])
-                y0 = float(corners[corner_idx][1])
-                x = x0 + (cx - x0) * fraction
-                y = y0 + (cy - y0) * fraction
-                return x, y
-
-            # Color registration analysis
             results_reg = {}
             debug_reg = preprocessed.copy()
-            
-            # Draw K frame box
             k_frame_int = k_frame_corners.astype(np.int32)
             cv2.polylines(debug_reg, [k_frame_int], True, (128, 128, 128), 2)
-            
-            # Mark target points with red X
-            for color, (tx_px, ty_px) in target_coords.items():
+
+            for _pn, (tx_px, ty_px) in target_coords.items():
                 tx_cv = int(tx_px)
                 ty_cv = int(ty_px)
-                
-                cv2.line(debug_reg, (tx_cv-10, ty_cv-10), (tx_cv+10, ty_cv+10), (0,0,255), 2)
-                cv2.line(debug_reg, (tx_cv-10, ty_cv+10), (tx_cv+10, ty_cv-10), (0,0,255), 2)
-                cv2.putText(debug_reg, f"T{color}", (tx_cv+12, ty_cv), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
-            
-            # Detect color boxes in entire image (inside or outside K frame)
-            for color, hsv_range in HSV.items():
-                print(f"DEBUG: Processing color {color} with HSV range {hsv_range}")
-                # Use corner detection to get all 4 corners from preprocessed image
-                # This searches the ENTIRE image, not just inside K frame
-                rect = detect_square_corners(preprocessed, hsv_range, min_area_ratio=0.7)
-                px_px = py_px = None
-                is_inside_k_frame = False
-                
-                if rect is not None:
-                    corner_idx = _get_corner_index_for_color(color)
-                    candidate_x, candidate_y = rect[corner_idx]
-                    
-                    # Check if point is inside image bounds
-                    if _is_inside(candidate_x, candidate_y, preprocessed.shape[1], preprocessed.shape[0], margin=5):
-                        px_px, py_px = float(candidate_x), float(candidate_y)
-                        # Check if inside K frame
-                        is_inside_k_frame = _is_inside_k_frame(px_px, py_px, k_frame_corners)
-                        location_str = "inside K frame" if is_inside_k_frame else "OUTSIDE K frame"
-                        print(f"{color}: Using {['top-left', 'top-right', 'bottom-right', 'bottom-left'][corner_idx]} corner at ({px_px:.1f}, {py_px:.1f}) - {location_str}")
-                    else:
-                        candidate_x, candidate_y = _safe_point_towards_center(rect, corner_idx, fraction=0.15)
-                        px_px, py_px = float(candidate_x), float(candidate_y)
-                        is_inside_k_frame = _is_inside_k_frame(px_px, py_px, k_frame_corners)
-                        location_str = "inside K frame" if is_inside_k_frame else "OUTSIDE K frame"
-                        print(f"{color}: Corner outside image bounds, using safe inward point at ({px_px:.1f}, {py_px:.1f}) - {location_str}")
-                else:
-                    print(f"{color}: Corner detection failed, using fallback method")
-                    bl = detect_bottom_left(preprocessed, hsv_range, min_area_ratio=0.7)
-                    if bl is not None:
-                        px_px, py_px = float(bl[0]), float(bl[1])
-                        is_inside_k_frame = _is_inside_k_frame(px_px, py_px, k_frame_corners)
-                        location_str = "inside K frame" if is_inside_k_frame else "OUTSIDE K frame"
-                        print(f"{color}: Fallback detection at ({px_px:.1f}, {py_px:.1f}) - {location_str}")
+                cv2.line(debug_reg, (tx_cv - 10, ty_cv - 10), (tx_cv + 10, ty_cv + 10), (0, 0, 255), 2)
+                cv2.line(debug_reg, (tx_cv - 10, ty_cv + 10), (tx_cv + 10, ty_cv - 10), (0, 0, 255), 2)
+                cv2.putText(
+                    debug_reg,
+                    f"T{_POS_TAG[_pn]}",
+                    (tx_cv + 12, ty_cv),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 0, 255),
+                    2,
+                )
 
-                if px_px is None or py_px is None:
-                    print(f"{color}: P point detection failed completely")
-                    results_reg[color] = None
+            for pos_name in FACE_POSITION_KEYS:
+                box = pos_to_box.get(pos_name)
+                if box is None:
+                    print(f"{pos_name}: face detection failed")
+                    results_reg[pos_name] = None
                     continue
 
-                # Convert to bottom-left origin coordinates
+                px_px, py_px = pivot_point_from_face_quad(box, pos_name)
+                is_inside_k_frame = _is_inside_k_frame(px_px, py_px, k_frame_corners)
+
                 px_bl, py_bl = pixel_to_bottom_left_coord(px_px, py_px, h_px)
-                
-                tx_px, ty_px = target_coords[color]
+                tx_px, ty_px = target_coords[pos_name]
                 tx_bl, ty_bl = pixel_to_bottom_left_coord(tx_px, ty_px, h_px)
-                
                 dx_px = tx_bl - px_bl
                 dy_px = ty_bl - py_bl
-                
                 px_mm = px_bl * mm_per_pixel_x
                 py_mm = py_bl * mm_per_pixel_y
                 tx_mm = tx_bl * mm_per_pixel_x
                 ty_mm = ty_bl * mm_per_pixel_y
                 dx_mm = dx_px * mm_per_pixel_x
                 dy_mm = dy_px * mm_per_pixel_y
-                
-                print(f"DEBUG: {color} - P({px_px:.1f}, {py_px:.1f}) -> T({tx_px:.1f}, {ty_px:.1f})")
-                print(f"DEBUG: {color} - movement_mm: ({dx_mm:.3f}, {dy_mm:.3f})")
-                if not is_inside_k_frame:
-                    print(f"DEBUG: {color} - WARNING: Color box is OUTSIDE K frame! Movement needed to reach target inside K frame.")
-                
-                results_reg[color] = {
-                    'P_coord_mm': (round(px_mm, 3), round(py_mm, 3)),
-                    'T_coord_mm': (round(tx_mm, 3), round(ty_mm, 3)),
-                    'movement_mm': (round(dx_mm, 3), round(dy_mm, 3)),
-                    'P_coord_px': (px_px, py_px),
-                    'is_inside_k_frame': is_inside_k_frame
+
+                print(f"DEBUG: {pos_name} - pivot({px_px:.1f}, {py_px:.1f}) -> T({tx_px:.1f}, {ty_px:.1f})")
+
+                results_reg[pos_name] = {
+                    "pivot_coord_mm": (round(px_mm, 3), round(py_mm, 3)),
+                    "T_coord_mm": (round(tx_mm, 3), round(ty_mm, 3)),
+                    "movement_mm": (round(dx_mm, 3), round(dy_mm, 3)),
+                    "pivot_coord_px": (px_px, py_px),
+                    "is_inside_k_frame": is_inside_k_frame,
+                    "face_quad": box.astype(np.float32),
                 }
-                
-                print(f"DEBUG: {color} - results_reg[{color}] = {results_reg[color]}")
-                
-                # Debug visualization for registration image
+
                 px_int, py_int = int(round(px_px)), int(round(py_px))
-                # Use different color if outside K frame
                 if is_inside_k_frame:
-                    circle_color = (0, 255, 0)  # Green if inside
+                    circle_color = (0, 255, 0)
                     text_color = (0, 255, 0)
                 else:
-                    circle_color = (0, 165, 255)  # Orange if outside
+                    circle_color = (0, 165, 255)
                     text_color = (0, 165, 255)
-                
                 cv2.circle(debug_reg, (px_int, py_int), 8, circle_color, -1)
-                cv2.circle(debug_reg, (px_int, py_int), 10, (0,0,0), 2)
-                cv2.putText(debug_reg, f"P{color}({px_mm:.2f},{py_mm:.2f})", 
-                           (px_int+15, py_int-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1)
-                cv2.putText(debug_reg, f"Move({dx_mm:.2f},{dy_mm:.2f})", 
-                           (px_int+15, py_int+10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-                
-                # Draw arrow from P to T if outside K frame
+                cv2.circle(debug_reg, (px_int, py_int), 10, (0, 0, 0), 2)
+                pts = box.astype(np.int32).reshape(-1, 1, 2)
+                cv2.polylines(debug_reg, [pts], True, text_color, 2)
+                cv2.putText(
+                    debug_reg,
+                    f"Pv{_POS_TAG[pos_name]}({px_mm:.2f},{py_mm:.2f})",
+                    (px_int + 15, py_int - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    text_color,
+                    1,
+                )
+                cv2.putText(
+                    debug_reg,
+                    f"Move({dx_mm:.2f},{dy_mm:.2f})",
+                    (px_int + 15, py_int + 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    1,
+                )
                 if not is_inside_k_frame:
                     tx_int, ty_int = int(tx_px), int(ty_px)
-                    cv2.arrowedLine(debug_reg, (px_int, py_int), (tx_int, ty_int), (255, 0, 255), 2, tipLength=0.02)
-            
+                    cv2.arrowedLine(
+                        debug_reg, (px_int, py_int), (tx_int, ty_int), (255, 0, 255), 2, tipLength=0.02
+                    )
+
             self.progress.emit("Analysis completed!")
             
             # Analyze right image for cocking calculation if available
@@ -272,10 +218,14 @@ class AnalysisWorker(QThread):
                 
                 right_orig = cv2.imread(self.right_image_path)
                 if right_orig is not None:
-                    right_preprocessed = extract_robust_square_marker(right_orig)
+                    # Use full original image for right side detection, then crop to K-frame
+                    right_preprocessed = right_orig.copy()
                     if right_preprocessed is not None:
                         right_k_frame_corners = detect_k_frame_box(right_preprocessed)
                         if right_k_frame_corners is not None:
+                            right_preprocessed, right_k_frame_corners = _crop_to_k_frame(
+                                right_preprocessed, right_k_frame_corners
+                            )
                             # Calculate right K frame center and size
                             right_k_frame_center = np.mean(right_k_frame_corners, axis=0)
                             right_k_frame_width = np.linalg.norm(right_k_frame_corners[1] - right_k_frame_corners[0])
@@ -286,71 +236,54 @@ class AnalysisWorker(QThread):
                             right_mm_per_pixel_x = 5.0 / right_k_frame_size
                             right_mm_per_pixel_y = 5.0 / right_k_frame_size
                             
-                            # Target coordinates relative to right K frame center
                             right_k_center_x, right_k_center_y = right_k_frame_center[0], right_k_frame_center[1]
                             right_k_half_size = right_k_frame_size / 2
-                            right_target_coords = {}
-                            if 'S' in HSV:
-                                right_target_coords['S'] = (right_k_center_x - right_k_half_size * 0.2, right_k_center_y - right_k_half_size * 0.2)
-                            right_target_coords['C'] = (right_k_center_x + right_k_half_size * 0.2, right_k_center_y - right_k_half_size * 0.2)
-                            right_target_coords['M'] = (right_k_center_x - right_k_half_size * 0.2, right_k_center_y + right_k_half_size * 0.2)
-                            right_target_coords['Y'] = (right_k_center_x + right_k_half_size * 0.2, right_k_center_y + right_k_half_size * 0.2)
-                            
-                            # Helper functions for right image
-                            def _is_inside_right(x: float, y: float, w: int, h: int, margin: int = 0) -> bool:
-                                return margin <= x < (w - margin) and margin <= y < (h - margin)
+                            right_target_coords = {
+                                "upper_left": (
+                                    right_k_center_x - right_k_half_size * 0.2,
+                                    right_k_center_y - right_k_half_size * 0.2,
+                                ),
+                                "upper_right": (
+                                    right_k_center_x + right_k_half_size * 0.2,
+                                    right_k_center_y - right_k_half_size * 0.2,
+                                ),
+                                "lower_left": (
+                                    right_k_center_x - right_k_half_size * 0.2,
+                                    right_k_center_y + right_k_half_size * 0.2,
+                                ),
+                                "lower_right": (
+                                    right_k_center_x + right_k_half_size * 0.2,
+                                    right_k_center_y + right_k_half_size * 0.2,
+                                ),
+                            }
 
-                            def _get_corner_index_for_color_right(color_name: str) -> int:
-                                mapping = {
-                                    'S': 2, 'C': 3, 'M': 1, 'Y': 0,
-                                }
-                                return mapping.get(color_name, 3)
+                            right_faces = detect_color_faces_in_warp(right_preprocessed)
+                            right_pos_to_box = assign_face_boxes_to_positions(
+                                right_faces, right_w_px, right_h_px
+                            )
 
-                            def _safe_point_towards_center_right(corners: np.ndarray, corner_idx: int, fraction: float = 0.2) -> tuple[float, float]:
-                                cx = float(np.mean(corners[:, 0]))
-                                cy = float(np.mean(corners[:, 1]))
-                                x0 = float(corners[corner_idx][0])
-                                y0 = float(corners[corner_idx][1])
-                                x = x0 + (cx - x0) * fraction
-                                y = y0 + (cy - y0) * fraction
-                                return x, y
-                            
-                            for color, hsv_range in HSV.items():
-                                rect = detect_square_corners(right_preprocessed, hsv_range, min_area_ratio=0.7)
-                                px_px = py_px = None
-                                
-                                if rect is not None:
-                                    corner_idx = _get_corner_index_for_color_right(color)
-                                    candidate_x, candidate_y = rect[corner_idx]
-                                    
-                                    if _is_inside_right(candidate_x, candidate_y, right_preprocessed.shape[1], right_preprocessed.shape[0], margin=5):
-                                        px_px, py_px = float(candidate_x), float(candidate_y)
-                                        print(f"RIGHT {color}: Using {['top-left', 'top-right', 'bottom-right', 'bottom-left'][corner_idx]} corner at ({px_px:.1f}, {py_px:.1f})")
-                                    else:
-                                        candidate_x, candidate_y = _safe_point_towards_center_right(rect, corner_idx, fraction=0.15)
-                                        px_px, py_px = float(candidate_x), float(candidate_y)
-                                        print(f"RIGHT {color}: Corner outside bounds, using safe inward point at ({px_px:.1f}, {py_px:.1f})")
-                                else:
-                                    print(f"RIGHT {color}: Corner detection failed, using fallback method")
-                                    bl = detect_bottom_left(right_preprocessed, hsv_range, min_area_ratio=0.7)
-                                    if bl is not None:
-                                        px_px, py_px = float(bl[0]), float(bl[1])
-                                        print(f"RIGHT {color}: Fallback detection at ({px_px:.1f}, {py_px:.1f})")
-
-                                if px_px is None or py_px is None:
-                                    print(f"RIGHT {color}: P point detection failed completely")
-                                    right_results_reg[color] = None
+                            for pos_name in FACE_POSITION_KEYS:
+                                box = right_pos_to_box.get(pos_name)
+                                if box is None:
+                                    print(f"RIGHT {pos_name}: face detection failed")
+                                    right_results_reg[pos_name] = None
                                     continue
 
+                                px_px, py_px = pivot_point_from_face_quad(box, pos_name)
                                 px_bl, py_bl = pixel_to_bottom_left_coord(px_px, py_px, right_h_px)
-                                
-                                tx_px, ty_px = right_target_coords[color]
+                                tx_px, ty_px = right_target_coords[pos_name]
                                 tx_bl, ty_bl = pixel_to_bottom_left_coord(tx_px, ty_px, right_h_px)
-                                
-                                right_results_reg[color] = {
-                                    'P_coord_mm': (px_bl * right_mm_per_pixel_x, py_bl * right_mm_per_pixel_y),
-                                    'T_coord_mm': (tx_bl * right_mm_per_pixel_x, ty_bl * right_mm_per_pixel_y),
-                                    'bottom_left_px': [px_px, py_px]
+                                right_results_reg[pos_name] = {
+                                    "pivot_coord_mm": (
+                                        px_bl * right_mm_per_pixel_x,
+                                        py_bl * right_mm_per_pixel_y,
+                                    ),
+                                    "T_coord_mm": (
+                                        tx_bl * right_mm_per_pixel_x,
+                                        ty_bl * right_mm_per_pixel_y,
+                                    ),
+                                    "pivot_coord_px": (px_px, py_px),
+                                    "face_quad": box.astype(np.float32),
                                 }
                             
                             # Calculate cocking using both left and right results
@@ -374,18 +307,18 @@ class AnalysisWorker(QThread):
             if strategy == 'global' and (k_lateral != 0 or k_circum != 0):
                 print(f"DEBUG: Global strategy - K frame adjustment: LATERAL={k_lateral:.3f}, CIRCUM={k_circum:.3f}")
                 print(f"DEBUG: Color adjustments are residuals after K frame movement")
-                for color in ['C', 'M', 'Y', 'S']:
-                    if color in adjustments and adjustments[color]:
-                        adj = adjustments[color]
+                for pos_name in FACE_POSITION_KEYS:
+                    if pos_name in adjustments and adjustments[pos_name]:
+                        adj = adjustments[pos_name]
                         if adj.get('LATERAL') is not None:
-                            print(f"  {color}: LATERAL={adj['LATERAL']:.3f}, CIRCUM={adj['CIRCUM']:.3f}")
+                            print(f"  {pos_name}: LATERAL={adj['LATERAL']:.3f}, CIRCUM={adj['CIRCUM']:.3f}")
             else:
                 print(f"DEBUG: Individual strategy - Each color moves independently")
             
             # Create visualization images
             preprocessed_img = self.create_preprocessed_image(preprocessed, right_preprocessed)
-            cmyk_detection_img = self.create_cmyk_detection_image(preprocessed, right_preprocessed, HSV, results_reg, right_results_reg)
-            p_points_img = self.create_p_points_image(preprocessed, right_preprocessed, results_reg, right_results_reg, h_px)
+            cmyk_detection_img = self.create_face_detection_image(preprocessed, right_preprocessed, results_reg, right_results_reg)
+            pivot_img = self.create_pivot_image(preprocessed, right_preprocessed, results_reg, right_results_reg, h_px)
             t_points_img = self.create_t_points_image(preprocessed, right_preprocessed, target_coords, h_px)
             
             # Create after adjustment visualization (use full original image, not cropped)
@@ -408,7 +341,7 @@ class AnalysisWorker(QThread):
                 'cocking_debug': cocking_debug_img,
                 'preprocessed': preprocessed_img,
                 'cmyk_detection': cmyk_detection_img,
-                'p_points': p_points_img,
+                'pivot': pivot_img,
                 't_points': t_points_img,
                 'after_adjustment': after_adjustment_img,
                 'special_color_name': self.special_color_name,
@@ -448,17 +381,17 @@ class AnalysisWorker(QThread):
             # Prepare left image results for comparison
             left_results_cocking = {}
             
-            for color, data in left_results_reg.items():
-                if data and 'P_coord_px' in data:
-                    px_px, py_px = data['P_coord_px']
-                    left_results_cocking[color] = {
-                        'bottom_left_px': [px_px, py_px],
-                        'color': color
+            for pos_name, data in left_results_reg.items():
+                if data and 'pivot_coord_px' in data:
+                    px_px, py_px = data['pivot_coord_px']
+                    left_results_cocking[pos_name] = {
+                        'pivot_coord_px': [px_px, py_px],
+                        'position': pos_name,
                     }
-                    print(f"    {color}: P point at ({px_px:.1f}, {py_px:.1f}) pixels (from left analysis)")
+                    print(f"    {pos_name}: pivot at ({px_px:.1f}, {py_px:.1f}) px (left)")
                 else:
-                    print(f"    {color}: No valid data from left image")
-                    left_results_cocking[color] = None
+                    print(f"    {pos_name}: No valid data from left image")
+                    left_results_cocking[pos_name] = None
             
             # Calculate cocking for each color
             cocking_results = {}
@@ -466,19 +399,19 @@ class AnalysisWorker(QThread):
             print("\nCOCKING ANALYSIS RESULTS:")
             print("-" * 40)
             
-            for color in ['C', 'M', 'Y', 'S']:
-                left_data = left_results_cocking.get(color)
-                right_data = right_results_reg.get(color)
+            for pos_name in FACE_POSITION_KEYS:
+                left_data = left_results_cocking.get(pos_name)
+                right_data = right_results_reg.get(pos_name)
                 
                 if left_data and right_data and left_data is not None and right_data is not None:
                     try:
-                        left_y_px = left_data['bottom_left_px'][1]
-                        right_y_px = right_data['bottom_left_px'][1]
+                        left_y_px = left_data['pivot_coord_px'][1]
+                        right_y_px = right_data['pivot_coord_px'][1]
                         
                         y_diff_px = right_y_px - left_y_px
                         y_diff_mm = y_diff_px * mm_per_pixel_y
                         
-                        cocking_results[color] = {
+                        cocking_results[pos_name] = {
                             'left_y_px': round(left_y_px, 2),
                             'right_y_px': round(right_y_px, 2),
                             'y_diff_px': round(y_diff_px, 2),
@@ -487,11 +420,11 @@ class AnalysisWorker(QThread):
                         }
                         
                         status_symbol = "^" if y_diff_mm > 0 else "v" if y_diff_mm < 0 else "-"
-                        print(f"{color}: Left={left_y_px:.1f}px, Right={right_y_px:.1f}px -> {status_symbol} {y_diff_mm:+.3f}mm")
+                        print(f"{pos_name}: Left={left_y_px:.1f}px, Right={right_y_px:.1f}px -> {status_symbol} {y_diff_mm:+.3f}mm")
                         
                     except Exception as e:
-                        print(f"{color}: Calculation failed - {str(e)}")
-                        cocking_results[color] = {
+                        print(f"{pos_name}: Calculation failed - {str(e)}")
+                        cocking_results[pos_name] = {
                             'status': 'Error',
                             'error': str(e)
                         }
@@ -502,8 +435,8 @@ class AnalysisWorker(QThread):
                     if not right_data or right_data is None:
                         missing.append("right")
                     
-                    print(f"{color}: Missing data from {', '.join(missing)} image(s)")
-                    cocking_results[color] = {
+                    print(f"{pos_name}: Missing data from {', '.join(missing)} image(s)")
+                    cocking_results[pos_name] = {
                         'status': 'Missing data',
                         'missing': missing
                     }
@@ -555,22 +488,22 @@ class AnalysisWorker(QThread):
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
             
             colors_rgb = {
-                'C': (255, 0, 0),
-                'M': (255, 0, 255),
-                'Y': (0, 165, 255),
-                'S': (0, 255, 255)
+                'upper_left': (255, 0, 0),
+                'upper_right': (255, 0, 255),
+                'lower_left': (0, 165, 255),
+                'lower_right': (0, 255, 255),
             }
             
             measurement_y = max_h - 60
             
-            for i, color in enumerate(['C', 'M', 'Y', 'S']):
-                left_data = left_results.get(color)
-                right_data = right_results.get(color)
-                color_rgb = colors_rgb.get(color, (255, 255, 255))
+            for i, pos_name in enumerate(FACE_POSITION_KEYS):
+                left_data = left_results.get(pos_name)
+                right_data = right_results.get(pos_name)
+                color_rgb = colors_rgb.get(pos_name, (255, 255, 255))
                 
                 if left_data and right_data and left_data is not None and right_data is not None:
-                    left_x, left_y = left_data['bottom_left_px']
-                    right_x, right_y = right_data['bottom_left_px']
+                    left_x, left_y = left_data['pivot_coord_px']
+                    right_x, right_y = right_data['pivot_coord_px']
                     
                     left_display_x = int(left_x)
                     left_display_y = int(left_y + y_offset)
@@ -582,10 +515,10 @@ class AnalysisWorker(QThread):
                     cv2.circle(combined_img, (right_display_x, right_display_y), 6, color_rgb, -1)
                     cv2.circle(combined_img, (right_display_x, right_display_y), 8, (255, 255, 255), 2)
                     
-                    cv2.putText(combined_img, f"P{color}", 
+                    cv2.putText(combined_img, f"Pv{pos_name[:2]}", 
                                (left_display_x + 12, left_display_y), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_rgb, 2)
-                    cv2.putText(combined_img, f"P{color}", 
+                    cv2.putText(combined_img, f"Pv{pos_name[:2]}", 
                                (right_display_x + 12, right_display_y), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_rgb, 2)
                     
@@ -596,7 +529,7 @@ class AnalysisWorker(QThread):
                     y_diff_px = right_y - left_y
                     y_diff_mm = y_diff_px * mm_per_pixel_y
                     
-                    measurement_text = f"{color}: {y_diff_mm:+.3f}mm"
+                    measurement_text = f"{pos_name[:8]}: {y_diff_mm:+.3f}mm"
                     text_x = 10 + (i * 120)
                     cv2.putText(combined_img, measurement_text, 
                                (text_x, measurement_y), 
@@ -612,7 +545,7 @@ class AnalysisWorker(QThread):
                         else:
                             cv2.arrowedLine(combined_img, (mid_x, mid_y + 10), (mid_x, mid_y - 10), arrow_color, 2)
                 else:
-                    measurement_text = f"{color}: N/A"
+                    measurement_text = f"{pos_name[:8]}: N/A"
                     text_x = 10 + (i * 120)
                     cv2.putText(combined_img, measurement_text, 
                                (text_x, measurement_y), 
@@ -667,119 +600,79 @@ class AnalysisWorker(QThread):
             cv2.putText(result_img, "RIGHT", (x_off+10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
         
         return result_img
-    
-    def order_points_for_detection(self, pts):
-        """Sort four points in clockwise order"""
-        s = pts.sum(axis=1)
-        diff = np.diff(pts, axis=1)
-        rect = np.zeros((4,2), dtype="float32")
-        rect[0] = pts[np.argmin(s)]
-        rect[2] = pts[np.argmax(s)]
-        rect[1] = pts[np.argmin(diff)]
-        rect[3] = pts[np.argmax(diff)]
-        return rect
-            
-    def create_cmyk_detection_image(self, left_preprocessed, right_preprocessed, HSV, left_results=None, right_results=None):
-        """Create image showing CMYK color detection results"""
+
+    def create_face_detection_image(self, left_preprocessed, right_preprocessed, left_results=None, right_results=None):
+        """Draw detected face quads (position-based) on warped K-frame images."""
         left_h, left_w = left_preprocessed.shape[:2]
         has_right = right_preprocessed is not None
         if has_right:
             right_h, right_w = right_preprocessed.shape[:2]
             if (right_h, right_w) != (left_h, left_w):
                 right_preprocessed = cv2.resize(right_preprocessed, (left_w, left_h))
-        
+
         gap = 40
         label_margin = 30
         canvas_w = left_w if not has_right else left_w * 2 + gap
         canvas_h = left_h + label_margin
         result_img = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
         result_img.fill(50)
-        
-        result_img[label_margin:label_margin+left_h, :left_w] = left_preprocessed
-        cv2.putText(result_img, "LEFT", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+
+        result_img[label_margin : label_margin + left_h, :left_w] = left_preprocessed
+        cv2.putText(result_img, "LEFT", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         if has_right:
             x_off = left_w + gap
-            result_img[label_margin:label_margin+left_h, x_off:x_off+left_w] = right_preprocessed
-            cv2.putText(result_img, "RIGHT", (x_off+10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
-        
-        color_map = {'C': (255, 0, 0), 'M': (255, 0, 255), 'Y': (0, 165, 255), 'S': (0, 255, 255)}
-        k = cv2.getStructuringElement(cv2.MORPH_RECT, (15,15))
-        
-        def draw_for(img, x_offset=0, results=None):
-            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-            
-            detected_positions = {}
-            for color, hsv_range in HSV.items():
-                mask = cv2.inRange(hsv, np.array(hsv_range[0]), np.array(hsv_range[1]))
-                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
-                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
-                cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if not cnts:
+            result_img[label_margin : label_margin + left_h, x_off : x_off + left_w] = right_preprocessed
+            cv2.putText(result_img, "RIGHT", (x_off + 10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        color_map = {
+            "upper_left": (255, 0, 0),
+            "upper_right": (255, 0, 255),
+            "lower_left": (0, 165, 255),
+            "lower_right": (0, 255, 255),
+        }
+
+        def draw_for(x_offset: int, results: dict | None) -> None:
+            if not results:
+                return
+            for pos_name, reg_data in results.items():
+                if not reg_data:
                     continue
-                areas = [cv2.contourArea(c) for c in cnts]
-                max_area = max(areas)
-                min_area_threshold = max_area * 0.3
-                large_cnts = [c for c, area in zip(cnts, areas) if area >= min_area_threshold]
-                draw_color = color_map.get(color, (255,255,255))
-                for c in large_cnts:
-                    cv2.drawContours(result_img, [c + np.array([x_offset, label_margin])], -1, draw_color, 3)
-                
-                if large_cnts:
-                    largest_cnt = max(large_cnts, key=cv2.contourArea)
-                    actual_color = classify_color_by_lab(img, largest_cnt)
-                    
-                    hull = cv2.convexHull(largest_cnt)
-                    eps = 0.02 * cv2.arcLength(hull, True)
-                    approx = cv2.approxPolyDP(hull, eps, True).reshape(-1,2)
-                    if len(approx) == 4 and cv2.isContourConvex(approx):
-                        rect = self.order_points_for_detection(approx)
-                        corner_mapping = {
-                            'S': 2, 'C': 3, 'M': 1, 'Y': 0,
-                        }
-                        corner_idx = corner_mapping.get(actual_color, 3)
-                        cx = int(rect[corner_idx][0]) + x_offset
-                        cy = int(rect[corner_idx][1]) + label_margin
-                        detected_positions[actual_color] = (cx, cy)
-                    else:
-                        M = cv2.moments(largest_cnt)
-                        if M["m00"] != 0:
-                            cx = int(M["m10"]/M["m00"]) + x_offset
-                            cy = int(M["m01"]/M["m00"]) + label_margin
-                            detected_positions[actual_color] = (cx, cy)
-            
-            if results:
-                for actual_color, reg_data in results.items():
-                    if not reg_data:
-                        continue
-                    
-                    px_px = py_px = None
-                    if 'P_coord_px' in reg_data:
-                        px_px, py_px = reg_data['P_coord_px']
-                    elif 'bottom_left_px' in reg_data:
-                        px_px, py_px = reg_data['bottom_left_px']
-                    else:
-                        continue
-                    
-                    px_cv = int(px_px) + x_offset
-                    py_cv = int(py_px) + label_margin
-                    
-                    draw_color = color_map.get(actual_color, (255,255,255))
-                    cv2.putText(result_img, f"{actual_color}", (px_cv-10, py_cv), cv2.FONT_HERSHEY_SIMPLEX, 1.0, draw_color, 3)
-                    
-                detected_positions.clear()
-            else:
-                for color, (cx, cy) in detected_positions.items():
-                    draw_color = color_map.get(color, (255,255,255))
-                    cv2.putText(result_img, f"{color}", (cx-10, cy), cv2.FONT_HERSHEY_SIMPLEX, 1.0, draw_color, 3)
-        
-        draw_for(left_preprocessed, 0, left_results)
+                draw_color = color_map.get(pos_name, (255, 255, 255))
+                if "face_quad" in reg_data and reg_data["face_quad"] is not None:
+                    quad = reg_data["face_quad"].astype(np.int32).reshape(-1, 1, 2)
+                    cv2.polylines(
+                        result_img,
+                        [quad + np.array([x_offset, label_margin])],
+                        True,
+                        draw_color,
+                        2,
+                    )
+                px_px = py_px = None
+                if "pivot_coord_px" in reg_data:
+                    px_px, py_px = reg_data["pivot_coord_px"]
+                if px_px is None:
+                    continue
+                px_cv = int(px_px) + x_offset
+                py_cv = int(py_px) + label_margin
+                short = pos_name.replace("_", " ")[:11]
+                cv2.putText(
+                    result_img,
+                    short,
+                    (px_cv - 10, py_cv),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    draw_color,
+                    2,
+                )
+
+        draw_for(0, left_results)
         if has_right:
-            draw_for(right_preprocessed, left_w + gap, right_results)
-        
+            draw_for(left_w + gap, right_results)
+
         return result_img
     
-    def create_p_points_image(self, left_preprocessed, right_preprocessed, left_results_reg, right_results_reg, h_px):
-        """Create image showing P points for left and right"""
+    def create_pivot_image(self, left_preprocessed, right_preprocessed, left_results_reg, right_results_reg, h_px):
+        """Create image showing pivot points for left and right"""
         left_h, left_w = left_preprocessed.shape[:2]
         has_right = right_preprocessed is not None and bool(right_results_reg)
         if has_right:
@@ -800,19 +693,24 @@ class AnalysisWorker(QThread):
             cv2.putText(result_img, "RIGHT", (x_off+10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
         
         def draw_points(results, mm_w, mm_h, x_off=0):
-            for color, reg_data in results.items():
+            for pos_name, reg_data in results.items():
                 if not reg_data:
                     continue
-                px_mm, py_mm = reg_data['P_coord_mm']
+                px_mm, py_mm = reg_data['pivot_coord_mm']
                 px_bl = px_mm / mm_w
                 py_bl = py_mm / mm_h
                 px_cv = int(px_bl) + x_off
                 py_cv = int(h_px - py_bl)
-                color_map = {'C': (255, 255, 0), 'M': (255, 0, 255), 'Y': (0, 255, 255), 'S': (255, 255, 255)}
-                draw_color = color_map.get(color, (255,255,255))
+                color_map = {
+                    "upper_left": (255, 255, 0),
+                    "upper_right": (255, 0, 255),
+                    "lower_left": (0, 255, 255),
+                    "lower_right": (255, 255, 255),
+                }
+                draw_color = color_map.get(pos_name, (255, 255, 255))
                 cv2.circle(result_img, (px_cv, py_cv+label_margin), 12, draw_color, -1)
                 cv2.circle(result_img, (px_cv, py_cv+label_margin), 15, (0,0,0), 3)
-                cv2.putText(result_img, f"P{color}", (px_cv+20, py_cv+label_margin), cv2.FONT_HERSHEY_SIMPLEX, 0.8, draw_color, 2)
+                cv2.putText(result_img, f"Pivot {pos_name}", (px_cv+20, py_cv+label_margin), cv2.FONT_HERSHEY_SIMPLEX, 0.5, draw_color, 2)
                 cv2.putText(result_img, f"({px_mm:.2f},{py_mm:.2f})", (px_cv+20, py_cv+label_margin+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
         
         # Use K frame size for mm_per_pixel calculation (assuming 5mm x 5mm)
@@ -848,12 +746,17 @@ class AnalysisWorker(QThread):
             cv2.putText(result_img, "RIGHT", (x_off+10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
         
         def draw_targets(w, img_w, x_off=0):
-            for color, (tx_px, ty_px) in target_coords.items():
+            for pos_name, (tx_px, ty_px) in target_coords.items():
                 tx_bl, ty_bl = pixel_to_bottom_left_coord(tx_px, ty_px, h_px)
                 tx_cv = int(tx_bl) + x_off
                 ty_cv = int(h_px - ty_bl) + label_margin
-                color_map = {'C': (255, 255, 0), 'M': (255, 0, 255), 'Y': (0, 255, 255), 'S': (255, 255, 255)}
-                draw_color = color_map.get(color, (255,255,255))
+                color_map = {
+                    "upper_left": (255, 255, 0),
+                    "upper_right": (255, 0, 255),
+                    "lower_left": (0, 255, 255),
+                    "lower_right": (255, 255, 255),
+                }
+                draw_color = color_map.get(pos_name, (255, 255, 255))
                 cv2.line(result_img, (tx_cv-15, ty_cv-15), (tx_cv+15, ty_cv+15), draw_color, 4)
                 cv2.line(result_img, (tx_cv-15, ty_cv+15), (tx_cv+15, ty_cv-15), draw_color, 4)
                 cv2.line(result_img, (tx_cv-15, ty_cv-15), (tx_cv+15, ty_cv+15), (0,0,0), 2)
@@ -862,7 +765,7 @@ class AnalysisWorker(QThread):
                 mm_per_pixel_y = 5.0 / left_h
                 tx_mm = tx_bl * mm_per_pixel_x
                 ty_mm = ty_bl * mm_per_pixel_y
-                cv2.putText(result_img, f"T{color}", (tx_cv+20, ty_cv), cv2.FONT_HERSHEY_SIMPLEX, 0.8, draw_color, 2)
+                cv2.putText(result_img, f"T {pos_name}", (tx_cv+20, ty_cv), cv2.FONT_HERSHEY_SIMPLEX, 0.55, draw_color, 2)
                 cv2.putText(result_img, f"({tx_mm:.2f},{ty_mm:.2f})", (tx_cv+20, ty_cv+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
         
         draw_targets(left_w, left_w, 0)
@@ -949,107 +852,117 @@ class AnalysisWorker(QThread):
             # Recalculate target positions relative to MOVED K frame center
             # This is the key fix: targets should be relative to the moved K frame, not original
             moved_k_center_x, moved_k_center_y = moved_k_center[0], moved_k_center[1]
-            moved_target_coords = {}
-            if 'S' in target_coords:
-                # S: Top-left relative to moved K frame center
-                moved_target_coords['S'] = (moved_k_center_x - moved_k_half_size * 0.2, 
-                                           moved_k_center_y - moved_k_half_size * 0.2)
-            moved_target_coords['C'] = (moved_k_center_x + moved_k_half_size * 0.2, 
-                                       moved_k_center_y - moved_k_half_size * 0.2)  # Top-right
-            moved_target_coords['M'] = (moved_k_center_x - moved_k_half_size * 0.2, 
-                                       moved_k_center_y + moved_k_half_size * 0.2)  # Bottom-left
-            moved_target_coords['Y'] = (moved_k_center_x + moved_k_half_size * 0.2, 
-                                       moved_k_center_y + moved_k_half_size * 0.2)  # Bottom-right
-            
-            # Color map
-            color_map = {
-                'C': (255, 0, 0),      # Blue
-                'M': (255, 0, 255),     # Magenta
-                'Y': (0, 165, 255),     # Orange/Yellow
-                'K': (200, 200, 200),   # Light gray for K frame
-                'S': (0, 255, 255)      # Cyan
+            moved_target_coords = {
+                "upper_left": (
+                    moved_k_center_x - moved_k_half_size * 0.2,
+                    moved_k_center_y - moved_k_half_size * 0.2,
+                ),
+                "upper_right": (
+                    moved_k_center_x + moved_k_half_size * 0.2,
+                    moved_k_center_y - moved_k_half_size * 0.2,
+                ),
+                "lower_left": (
+                    moved_k_center_x - moved_k_half_size * 0.2,
+                    moved_k_center_y + moved_k_half_size * 0.2,
+                ),
+                "lower_right": (
+                    moved_k_center_x + moved_k_half_size * 0.2,
+                    moved_k_center_y + moved_k_half_size * 0.2,
+                ),
             }
-            
-            # Process each color
-            for color in ['C', 'M', 'Y', 'K', 'S']:
-                adj_data = adjustments.get(color, {})
-                
+
+            color_map = {
+                "upper_left": (255, 0, 0),
+                "upper_right": (255, 0, 255),
+                "lower_left": (0, 165, 255),
+                "lower_right": (0, 255, 255),
+                "K": (200, 200, 200),
+            }
+
+            for name in list(FACE_POSITION_KEYS) + ["K"]:
+                adj_data = adjustments.get(name, {})
+
                 if adj_data is None:
                     continue
-                
-                # Convert coordinates from preprocessed to original image
-                if color == 'K':
-                    # K frame center (original position, before movement)
+
+                if name == "K":
                     k_center_orig = np.mean(k_frame_corners_orig, axis=0)
                     px_px, py_px = float(k_center_orig[0]), float(k_center_orig[1])
                 else:
-                    # Get current position (P point) from registration results
-                    reg_data = results_reg.get(color)
-                    if reg_data is None or 'P_coord_px' not in reg_data:
+                    reg_data = results_reg.get(name)
+                    if reg_data is None or "pivot_coord_px" not in reg_data:
                         continue
-                    # Convert from preprocessed coordinates to original coordinates
-                    px_prep, py_prep = reg_data['P_coord_px']
+                    px_prep, py_prep = reg_data["pivot_coord_px"]
                     px_px = px_prep + offset_x
                     py_px = py_prep + offset_y
-                
+
                 px_int, py_int = int(px_px), int(py_px)
-                
-                # Get adjustment values
-                lateral_mm = adj_data.get('LATERAL')
-                circum_mm = adj_data.get('CIRCUM')
-                
+
+                lateral_mm = adj_data.get("LATERAL")
+                circum_mm = adj_data.get("CIRCUM")
+
                 if lateral_mm is None or circum_mm is None:
                     continue
-                
-                # Apply adjustment values to get final position
-                # LATERAL: X-axis movement (positive = right)
-                # CIRCUM: Y-axis movement (positive = up, but pixel Y is inverted)
+
                 dx_px = lateral_mm / mm_per_pixel_x
                 dy_px = circum_mm / mm_per_pixel_y
-                
-                # Calculate position after applying adjustment
+
                 new_x_px = px_px + dx_px
-                new_y_px = py_px - dy_px  # Y is inverted in pixel coordinates
+                new_y_px = py_px - dy_px
                 new_x_int, new_y_int = int(new_x_px), int(new_y_px)
-                
-                # Get target position - use MOVED K frame based targets
-                if color == 'K':
-                    # K frame target is its moved position
+
+                if name == "K":
                     tx_px, ty_px = float(moved_k_center[0]), float(moved_k_center[1])
                 else:
-                    # Target is relative to MOVED K frame center
-                    tx_px, ty_px = moved_target_coords.get(color, (px_px, py_px))
-                
+                    tx_px, ty_px = moved_target_coords.get(name, (px_px, py_px))
+
                 tx_int, ty_int = int(tx_px), int(ty_px)
-                
-                # Verify that adjustment leads to target (should match within rounding)
-                distance_to_target = ((new_x_px - tx_px)**2 + (new_y_px - ty_px)**2)**0.5
-                if distance_to_target > 2.0:  # More than 2 pixels off
-                    print(f"WARNING: {color} after adjustment is {distance_to_target:.1f}px from target!")
+
+                distance_to_target = ((new_x_px - tx_px) ** 2 + (new_y_px - ty_px) ** 2) ** 0.5
+                if distance_to_target > 2.0:
+                    print(f"WARNING: {name} after adjustment is {distance_to_target:.1f}px from target!")
                     print(f"  After: ({new_x_px:.1f}, {new_y_px:.1f}), Target: ({tx_px:.1f}, {ty_px:.1f})")
-                
-                color_rgb = color_map.get(color, (255, 255, 255))
-                
-                # Draw current position (P) - hollow circle
+
+                color_rgb = color_map.get(name, (255, 255, 255))
+
                 cv2.circle(result_img, (px_int, py_int), 10, color_rgb, 2)
-                cv2.putText(result_img, f"P{color}", (px_int + 15, py_int - 5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_rgb, 2)
-                
-                # Draw arrow from P to After position (showing adjustment)
-                cv2.arrowedLine(result_img, (px_int, py_int), (new_x_int, new_y_int), 
-                              color_rgb, 2, tipLength=0.02)
-                
-                # Draw target position (X mark)
+                cv2.putText(
+                    result_img,
+                    f"Pivot {name}",
+                    (px_int + 15, py_int - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    color_rgb,
+                    2,
+                )
+
+                cv2.arrowedLine(
+                    result_img, (px_int, py_int), (new_x_int, new_y_int), color_rgb, 2, tipLength=0.02
+                )
+
                 cv2.line(result_img, (tx_int - 8, ty_int - 8), (tx_int + 8, ty_int + 8), (0, 255, 0), 2)
                 cv2.line(result_img, (tx_int - 8, ty_int + 8), (tx_int + 8, ty_int - 8), (0, 255, 0), 2)
-                cv2.putText(result_img, f"T{color}", (tx_int + 12, ty_int), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                
-                # Draw "After adjustment" position (filled circle)
+                cv2.putText(
+                    result_img,
+                    f"T {name}",
+                    (tx_int + 12, ty_int),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 0),
+                    2,
+                )
+
                 cv2.circle(result_img, (new_x_int, new_y_int), 12, color_rgb, -1)
                 cv2.circle(result_img, (new_x_int, new_y_int), 14, (255, 255, 255), 2)
-                cv2.putText(result_img, f"After{color}", (new_x_int + 15, new_y_int + 5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_rgb, 2)
+                cv2.putText(
+                    result_img,
+                    f"After {name}",
+                    (new_x_int + 15, new_y_int + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color_rgb,
+                    2,
+                )
                 
                 # If After and Target are close enough, show success indicator
                 if distance_to_target <= 2.0:
@@ -1062,9 +975,9 @@ class AnalysisWorker(QThread):
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             legend_y += 25
             
-            # P: Current position (hollow circle)
+            # Pivot: current position (hollow circle)
             cv2.circle(result_img, (legend_x + 10, legend_y), 8, (255, 255, 255), 2)
-            cv2.putText(result_img, "P = Current position", (legend_x + 25, legend_y + 5), 
+            cv2.putText(result_img, "Pivot = current position", (legend_x + 25, legend_y + 5), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             legend_y += 20
             
